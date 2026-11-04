@@ -2539,6 +2539,9 @@ void Ui::drawEnvironment(AppState& app) {
     }
     if (ImGui::CollapsingHeader(ICON_USERS "  Population")) {
         ImGui::SliderInt("Max population", &p.maxPopulation, 500, 30000);
+        ImGui::SliderFloat("Random shocks per year", &p.shocksPerYear, 0.f, 4.f, p.shocksPerYear > 0 ? "%.1f" : "off");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+            ImGui::SetTooltip("Meteors, droughts, volcanoes, blooms, cold snaps, heat waves and plagues strike at random. They reset the playing field, so new niches and radiations open up.");
         ImGui::SliderInt("Brain tick rate", &p.thinkEvery, 1, 4, p.thinkEvery == 1 ? "every tick" : "every %d ticks");
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
             ImGui::SetTooltip("Each brain thinks every Nth tick (staggered; its outputs persist in between). Higher = much faster simulation, slightly coarser reactions.");

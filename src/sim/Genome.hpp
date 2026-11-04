@@ -90,7 +90,11 @@ enum Input : int {
 
 enum Output : int { OUT_THRUST, OUT_TURN, OUT_EAT, OUT_ATTACK, OUT_REPRODUCE, OUT_SIGNAL, OUT_SHARE, OUT_PHEROMONE, OUT_CALL_A, OUT_CALL_B, OUT_TEND, OUT_BLINK, OUT_OVERCLOCK, OUT_PHASE, N_OUTPUTS };
 
-constexpr int N_HIDDEN = 16;
+// Hidden neurons per brain. Build-time option: cmake -DPRIMORDIA_HIDDEN=32 (bigger brains cost CPU time).
+#ifndef PRIMORDIA_HIDDEN
+#define PRIMORDIA_HIDDEN 16
+#endif
+constexpr int N_HIDDEN = PRIMORDIA_HIDDEN;
 constexpr int N_LEARN = N_HIDDEN * int(N_OUTPUTS); // lifetime-learned hidden->output offsets (not inherited as genes)
 
 // Weights are stored input-major ([source][target]) so evaluation is a series of

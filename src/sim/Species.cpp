@@ -61,6 +61,7 @@ std::string roman(int n) {
 
 void SpeciesTracker::clear(uint64_t seed) {
     all_.clear();
+    candidates_.clear();
     usedNames_.clear();
     nameRng_.reseed(seed ^ 0x5bd1e995ULL, 77);
     aliveCount_ = 0;
@@ -163,8 +164,25 @@ uint32_t SpeciesTracker::assign(const Genome& child, uint32_t parentSpecies, int
         if (gp.alive() && geneticDistance(child, gp.rep) < threshold * 0.8f) best = ps.parentId;
     }
     if (best) return best;
-    created = true;
-    return create(child, parentSpecies, tick, childId);
+    // Candidate founders: only a cluster of births in the same new region becomes a species.
+    auto& cands = candidates_[parentSpecies];
+    for (size_t i = 0; i < cands.size();) {
+        if (tick - cands[i].lastTick > 4000) cands.erase(cands.begin() + long(i));
+        else ++i;
+    }
+    for (Candidate& cd : cands)
+        if (geneticDistance(child, cd.rep) < threshold) {
+            cd.lastTick = tick;
+            if (++cd.count >= MIN_FOUNDERS) {
+                cands.erase(cands.begin() + (&cd - cands.data()));
+                created = true;
+                return create(child, parentSpecies, tick, childId);
+            }
+            return parentSpecies;
+        }
+    if (cands.size() >= 8) cands.erase(cands.begin());
+    cands.push_back({child, 1, tick});
+    return parentSpecies;
 }
 
 void SpeciesTracker::onBirth(uint32_t id) {

@@ -29,6 +29,7 @@ struct WorldSettings {
     float waterFraction = 0.32f;   // share of the map under water
     float featureScale = 1.0f;     // bigger = larger landmasses
     float moisture = 0.0f;         // -0.5 .. 0.5 global moisture bias
+    float regionContrast = 0.6f;   // 0 = uniform land; 1 = strong oases and badlands (distinct regional niches)
     float temperature = 0.0f;      // -0.5 .. 0.5 global temperature bias
     int initialPopulation = 900;
     int foundingLineages = 4;
@@ -70,6 +71,7 @@ struct SimParams {
     bool sexualReproduction = true;
     // Population
     int maxPopulation = 12000;
+    float shocksPerYear = 1.0f;     // random catastrophes and windfalls (meteor, drought, volcano, bloom, climate, plague)
     int thinkEvery = 2;             // each brain runs every Nth tick (outputs persist in between): the big speed lever
     bool autoReseed = true;
     int reseedBelow = 30;
@@ -392,6 +394,7 @@ private:
     void considerRecords(const Creature& c);
     // Discoveries.cpp: notice behaviours nobody scripted and write them into the event log.
     void scanBehaviours();
+    void randomShock();
     void discover(uint8_t tag, uint32_t speciesId, Vec2 pos, std::string text, uint32_t bucket = 0);
     BehaviorAcc& behaviorOf(uint32_t speciesId);
 

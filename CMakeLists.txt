@@ -41,6 +41,8 @@ target_compile_options(imgui PRIVATE -O2 -w)
 # --- Primordia ---------------------------------------------------------------
 file(GLOB_RECURSE PRIMORDIA_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/*.cpp)
 add_executable(primordia ${PRIMORDIA_SOURCES})
+set(PRIMORDIA_HIDDEN 16 CACHE STRING "Hidden neurons per brain (16, 32, 64...)")
+target_compile_definitions(primordia PRIVATE PRIMORDIA_HIDDEN=${PRIMORDIA_HIDDEN})
 target_include_directories(primordia PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(primordia PRIVATE imgui SDL3::SDL3 PkgConfig::EPOXY Threads::Threads)
 target_compile_options(primordia PRIVATE

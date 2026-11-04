@@ -155,7 +155,8 @@ void Terrain::generate(const WorldSettings& ws) {
     plantSpr.assign(n, 0.4f);
     water.assign(n, 0);
 
-    Noise2D ne(ws.seed * 31 + 1), nm(ws.seed * 31 + 2), nt(ws.seed * 31 + 3), nw(ws.seed * 31 + 4);
+    Noise2D ne(ws.seed * 31 + 1), nm(ws.seed * 31 + 2), nt(ws.seed * 31 + 3), nw(ws.seed * 31 + 4), nz(ws.seed * 31 + 5),
+        nd(ws.seed * 31 + 6);
     float freq = 1.f / (1400.f * std::max(0.2f, ws.featureScale));
     float edgeFalloff = 0.35f, waterFraction = ws.waterFraction;
     bool radial = false;
@@ -180,7 +181,12 @@ void Terrain::generate(const WorldSettings& ws) {
             float edge = radial ? std::sqrt(u * u + v * v) * 0.85f : std::max(std::fabs(u), std::fabs(v));
             e -= edgeFalloff * smoothstep(0.55f, 1.0f, edge);
             elevation[i] = e;
-            moisture[i] = clamp01(nm.fbm(x * freq * 1.4f, y * freq * 1.4f, 5) * 0.6f + 0.5f + ws.moisture);
+            // Regional zones: broad oases and badlands give species distinct niches to specialise in.
+            const float zone = nz.fbm(x * freq * 0.55f, y * freq * 0.55f, 3);
+            moisture[i] = clamp01(nm.fbm(x * freq * 1.4f, y * freq * 1.4f, 5) * 0.6f + 0.5f + ws.moisture +
+                                  ws.regionContrast * 0.55f * zone);
+            // Patches where plants start out chemically defended (selects for detox there).
+            plantDef[i] = 0.02f + 0.5f * smoothstep(0.55f, 0.85f, clamp01(0.5f + 0.9f * nd.fbm(x * freq * 0.8f, y * freq * 0.8f, 3)));
             float lat = latitude(cy);
             climateBase[i] = 0.85f - 1.55f * std::pow(std::fabs(lat), 1.25f) +
                              0.12f * nt.fbm(x * freq * 2.f, y * freq * 2.f, 3) + ws.temperature;
@@ -339,7 +345,7 @@ void World::create(const WorldSettings& ws) {
     terrain.generate(ws);
     for (size_t i = 0; i < terrain.plant.size(); ++i) {
         terrain.plant[i] = terrain.fertility[i] * params.plantCapacity * rng_.range(0.5f, 1.f);
-        terrain.plantDef[i] = rng_.range(0.f, 0.15f);
+        terrain.plantDef[i] = clamp01(terrain.plantDef[i] + rng_.range(0.f, 0.05f));
         terrain.plantSpr[i] = rng_.range(0.2f, 0.6f);
     }
 
@@ -473,6 +479,7 @@ void World::tick() {
                     "A new disease emerges among " + species.get(host).name());
         }
     }
+    if (params.shocksPerYear > 0.f && rng_.chance(params.shocksPerYear / float(std::max(1, params.yearLength)))) randomShock();
     if (params.predatorImmigration && tickCount % 500 == 0) {
         int hunters = 0;
         for (const Creature& c : creatures) hunters += c.ph.diet > 0.6f;
@@ -1815,6 +1822,19 @@ int World::infect(Vec2 at, float radius) {
 void World::climateShock(float delta, const char* label) {
     climateEvent_ += delta;
     log(EventKind::Catastrophe, 0, {}, label);
+}
+
+void World::randomShock() {
+    const float r = rng_.uniform();
+    const Vec2 at = randomLand(rng_, 0.2f);
+    if (r < 0.30f) meteor(at, rng_.range(110.f, 260.f));
+    else if (r < 0.45f) drought();
+    else if (r < 0.55f) volcano(at, rng_.range(100.f, 200.f));
+    else if (r < 0.70f) bloom();
+    else if (r < 0.90f) {
+        const bool cold = rng_.chance(0.5f);
+        climateShock(cold ? -0.3f : 0.3f, cold ? "A cold snap grips the world" : "A heat wave scorches the world");
+    } else plague(0, 0.15f);
 }
 
 void World::bloom() {

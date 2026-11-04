@@ -59,16 +59,24 @@ std::string World::bestAtText(uint32_t speciesId) const {
     return t.empty() ? "no standout skill" : t;
 }
 
+uint32_t genusKey(const std::string& genus) {
+    uint32_t h = 2166136261u;
+    for (unsigned char ch : genus) h = (h ^ ch) * 16777619u;
+    return h;
+}
+
 BehaviorAcc& World::behaviorOf(uint32_t speciesId) {
     if (behav_.size() < species.all().size()) behav_.resize(species.all().size());
     return behav_[(speciesId ? speciesId : 1) - 1];
 }
 
 void World::discover(uint8_t tag, uint32_t speciesId, Vec2 pos, std::string text, uint32_t bucket) {
-    const uint64_t key = (uint64_t(speciesId) << 32) | (uint64_t(bucket) << 8) | tag;
+    // One entry per behaviour per genus: close relatives doing the same thing are not news.
+    const uint64_t who = speciesId && species.valid(speciesId) ? genusKey(species.get(speciesId).genus) : 0;
+    const uint64_t key = (who << 32) | (uint64_t(bucket) << 8) | tag;
     if (!announced_.insert(key).second) return;
     // Bucketed (repeatable) discoveries are keyed by tag alone after a reload; good enough for a journal.
-    announced_.insert((uint64_t(speciesId) << 32) | tag);
+    announced_.insert((who << 32) | tag);
     events.push({tickCount, EventKind::Discovery, speciesId, pos, std::move(text), tag});
 }
 

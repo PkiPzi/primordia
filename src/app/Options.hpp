@@ -12,6 +12,7 @@ struct Options {
     uint64_t seed = 0;        // 0 = random
     int threads = 0;          // 0 = all hardware threads
     int population = -1;
+    float shocks = -1.f;      // random shocks per year; <0 = default
     int thinkEvery = 0;       // 0 = default (see SimParams::thinkEvery)
     float worldSize = 0.f;    // 0 = default
     std::string load;

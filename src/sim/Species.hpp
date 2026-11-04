@@ -2,6 +2,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -44,7 +45,10 @@ public:
     void clear(uint64_t seed);
     uint32_t createRoot(const Genome& g, int64_t tick, uint32_t founderId);
     // Returns the species for a newborn; creates a new one when it has diverged.
+    // A new species needs MIN_FOUNDERS births clustered in the same new genetic region; lone outliers stay with their
+    // parent species (stops a stream of short-lived 'flash' species from hypermutating lineages).
     uint32_t assign(const Genome& child, uint32_t parentSpecies, int64_t tick, uint32_t childId, bool& created);
+    static constexpr int MIN_FOUNDERS = 6;
     void onBirth(uint32_t id);
     bool onDeath(uint32_t id, int64_t tick); // true when the species just went extinct
     void recordHistory(int64_t tick);
@@ -63,6 +67,8 @@ public:
     void setAliveCount(int n) { aliveCount_ = n; }
 
 private:
+    struct Candidate { Genome rep; int count; int64_t lastTick; };
+    std::unordered_map<uint32_t, std::vector<Candidate>> candidates_; // per parent species (transient, not saved)
     uint32_t create(const Genome& g, uint32_t parent, int64_t tick, uint32_t founderId);
     std::string makeGenus();
     std::string makeEpithet(const Genome& g, const Genome* parent);

@@ -24,6 +24,7 @@ Options parseOptions(int argc, char** argv) {
         else if (is("--threads")) o.threads = std::atoi(next());
         else if (is("--population")) o.population = std::atoi(next());
         else if (is("--think-every")) o.thinkEvery = std::atoi(next());
+        else if (is("--shocks")) o.shocks = float(std::atof(next()));
         else if (is("--size")) o.worldSize = float(std::atof(next()));
         else if (is("--load")) o.load = next();
         else if (is("--save")) o.save = next();
@@ -54,6 +55,7 @@ void printUsage() {
         "  --seed N            World seed (default: random)\n"
         "  --size N            World width/height in units (default 4096)\n"
         "  --population N      Initial population\n"
+        "  --shocks X          Random shocks (meteor, drought...) per year; 0 = none (default 1)\n"
         "  --think-every N     Each brain runs every Nth tick (1 = every tick, default 2; faster, slightly coarser)\n"
         "  --threads N         Simulation threads (default: all cores)\n"
         "  --load FILE         Load a saved world\n"
@@ -83,6 +85,7 @@ int runHeadless(const Options& opt) {
         ws.seed = opt.seed ? opt.seed : std::random_device{}();
         if (opt.worldSize > 0) ws.width = ws.height = opt.worldSize;
         if (opt.population > 0) ws.initialPopulation = opt.population;
+        if (opt.shocks >= 0.f) world.params.shocksPerYear = opt.shocks;
         if (opt.thinkEvery > 0) world.params.thinkEvery = std::clamp(opt.thinkEvery, 1, 8);
         world.create(ws);
         if (opt.scenario >= 0 && opt.scenario < scenarioCount()) {
@@ -145,12 +148,13 @@ int runHeadless(const Options& opt) {
                 (long long)opt.ticks, total, double(opt.ticks) / total, world.species.all().size(),
                 world.species.aliveCount(), (unsigned long long)world.stats.totalBirths,
                 (unsigned long long)world.stats.totalDeaths);
-    int discoveries = 0;
+    int discoveries = 0, flash = 0;
+    for (const Species& sp : world.species.all()) flash += sp.peakPopulation < 5;
     for (const WorldEvent& e : world.events.items) discoveries += e.kind == EventKind::Discovery;
-    std::printf("RESULT seed=%llu ticks=%lld secs=%.2f ticks_per_s=%.0f mcreature_ticks_per_s=%.3f pop=%zu species_alive=%d species_ever=%zu discoveries=%d\n",
+    std::printf("RESULT seed=%llu ticks=%lld secs=%.2f ticks_per_s=%.0f mcreature_ticks_per_s=%.3f pop=%zu species_alive=%d species_ever=%zu discoveries=%d flash_species=%d\n",
                 (unsigned long long)world.settings.seed, (long long)opt.ticks, total, double(opt.ticks) / total,
                 creatureTicks / total / 1e6, world.creatures.size(), world.species.aliveCount(), world.species.all().size(),
-                discoveries);
+                discoveries, flash);
     std::printf("Deaths by cause:");
     for (int k = 1; k < int(world.stats.causeTotals.size()); ++k)
         std::printf(" %s=%llu", deathCauseName(DeathCause(k)), (unsigned long long)world.stats.causeTotals[k]);
