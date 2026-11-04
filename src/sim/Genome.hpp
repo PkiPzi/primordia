@@ -36,6 +36,8 @@ enum Gene : int {
     G_CHOOSY,      // how strictly that preference is enforced
     G_CLOCK,       // internal oscillator frequency
     G_PLASTICITY,  // lifetime learning rate (costs upkeep)
+    G_LINK,        // strength of the neural link to nearby kin (alien: brains share thoughts)
+    G_DETOX,       // tolerance of plant chemical defences (costs upkeep)
     G_COUNT
 };
 
@@ -82,10 +84,11 @@ enum Input : int {
     IN_HEAR_B,
     IN_HEAR_B_DIR,
     IN_TENDED,     // how well-tended the soil underfoot is
+    IN_LINKED,     // how many kin are neurally linked to this creature (0..1)
     N_INPUTS
 };
 
-enum Output : int { OUT_THRUST, OUT_TURN, OUT_EAT, OUT_ATTACK, OUT_REPRODUCE, OUT_SIGNAL, OUT_SHARE, OUT_PHEROMONE, OUT_CALL_A, OUT_CALL_B, OUT_TEND, N_OUTPUTS };
+enum Output : int { OUT_THRUST, OUT_TURN, OUT_EAT, OUT_ATTACK, OUT_REPRODUCE, OUT_SIGNAL, OUT_SHARE, OUT_PHEROMONE, OUT_CALL_A, OUT_CALL_B, OUT_TEND, OUT_BLINK, OUT_OVERCLOCK, OUT_PHASE, N_OUTPUTS };
 
 constexpr int N_HIDDEN = 16;
 constexpr int N_LEARN = N_HIDDEN * int(N_OUTPUTS); // lifetime-learned hidden->output offsets (not inherited as genes)
@@ -155,6 +158,8 @@ struct Phenotype {
     float longevity;
     float upkeep;       // fixed per-tick cost (vision + brain), before global multipliers
     float learnRate;    // lifetime learning rate
+    float linkStrength; // coupling to linked kin's hidden state
+    float detox;        // resistance to plant defences
     int connections;
 
     static Phenotype from(const Genome& g, float specialization);

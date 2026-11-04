@@ -36,6 +36,7 @@ struct StatSample {
     float contests;          // food contests per 100 ticks
     float hawkShare;         // share of contestants that acted aggressively (hawks)
     float doveDove, hawkDove, hawkHawk; // shares of each contest type
+    float plantDefence, plantSpread; // biomass-weighted means of the plants' evolved traits
     float geneMean[G_COUNT];
     float geneStd[G_COUNT];
 };

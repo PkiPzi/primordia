@@ -35,6 +35,8 @@ const GeneInfo GENE_INFO_TABLE[] = {
     {"Choosiness", "How strictly mates must match the preferred colour. Choosy creatures may skip mating.", 0.5f},
     {"Clock", "Frequency of the internal oscillator neuron.", 0.3f},
     {"Plasticity", "Lifetime learning rate: brains rewire themselves toward whatever just paid off. Costs upkeep.", 0.4f},
+    {"Neural link", "Couples this brain's hidden state to nearby kin, so neighbours partly think together. Costs upkeep.", 0.5f},
+    {"Detox", "Tolerance of plant chemical defences. Costs upkeep; pays off where plants have evolved poisons.", 0.5f},
 };
 
 static_assert(std::size(GENE_INFO_TABLE) == G_COUNT, "one GeneInfo per gene");
@@ -43,7 +45,7 @@ const GeneInfo* const GENE_INFO = GENE_INFO_TABLE;
 namespace {
 
 std::string g_inputNames[N_INPUTS];
-const char* g_outputNames[N_OUTPUTS] = {"Thrust", "Turn", "Eat", "Attack", "Reproduce", "Signal", "Share", "Pheromone", "Call A", "Call B", "Tend soil"};
+const char* g_outputNames[N_OUTPUTS] = {"Thrust", "Turn", "Eat", "Attack", "Reproduce", "Signal", "Share", "Pheromone", "Call A", "Call B", "Tend soil", "Blink", "Overclock", "Phase"};
 const char* g_channelNames[EC_COUNT] = {"Plant", "Meat", "Creature", "Size", "Kin", "Obstacle"};
 
 struct NameInit {
@@ -57,7 +59,7 @@ struct NameInit {
         const char* rest[] = {"Energy", "Health", "Age", "Speed", "In water", "Temperature",
                               "Grass here", "Pain", "Clock", "Heard signal", "Touch", "Sick", "Daylight",
                               "Flock heading", "Crowding", "Thirst", "Water dir", "Smell", "Smell dir",
-                              "Hear A", "Hear A dir", "Hear B", "Hear B dir", "Tended soil"};
+                              "Hear A", "Hear A dir", "Hear B", "Hear B dir", "Tended soil", "Linked kin"};
         static_assert(std::size(rest) == N_INPUTS - IN_ENERGY, "one name per scalar input");
         for (int i = IN_ENERGY; i < N_INPUTS; ++i) g_inputNames[i] = rest[i - IN_ENERGY];
     }
@@ -99,11 +101,13 @@ Genome Genome::random(Rng& rng, float dietMax) {
     g[G_CHOOSY] = rng.range(0.f, 0.2f);
     g[G_CLOCK] = rng.uniform();
     g[G_PLASTICITY] = rng.range(0.f, 0.4f);
+    g[G_LINK] = rng.range(0.f, 0.2f);
+    g[G_DETOX] = rng.range(0.f, 0.12f);
 
     // Sparse random wiring; behaviours with real costs (attack, share, pheromone)
     // start disconnected and must be discovered by structural mutation.
     for (int k = 0; k < BRAIN_SIZE; ++k) gn.w[k] = rng.chance(0.08f) ? rng.normal() * 0.6f : 0.f;
-    for (int o : {int(OUT_ATTACK), int(OUT_SHARE), int(OUT_PHEROMONE), int(OUT_CALL_A), int(OUT_CALL_B), int(OUT_TEND)}) {
+    for (int o : {int(OUT_ATTACK), int(OUT_SHARE), int(OUT_PHEROMONE), int(OUT_CALL_A), int(OUT_CALL_B), int(OUT_TEND), int(OUT_BLINK), int(OUT_OVERCLOCK), int(OUT_PHASE)}) {
         for (int h = 0; h < N_HIDDEN; ++h) gn.w[wHO(o, h)] = 0.f;
         for (int i = 0; i < N_INPUTS; ++i) gn.w[wIO(o, i)] = 0.f;
     }
@@ -117,6 +121,7 @@ Genome Genome::random(Rng& rng, float dietMax) {
     gn.w[OFF_BO + OUT_PHEROMONE] = -1.0f;
     gn.w[OFF_BO + OUT_CALL_A] = gn.w[OFF_BO + OUT_CALL_B] = -1.2f;
     gn.w[OFF_BO + OUT_TEND] = -1.4f;
+    gn.w[OFF_BO + OUT_BLINK] = gn.w[OFF_BO + OUT_OVERCLOCK] = gn.w[OFF_BO + OUT_PHASE] = -1.6f;
     // Innate grazing: steer toward grass seen by side eyes, slow down on lush grass, avoid water.
     io(OUT_TURN, eye(0, EC_PLANT)) = -1.0f;
     io(OUT_TURN, eye(1, EC_PLANT)) = -0.5f;
@@ -422,6 +427,8 @@ Phenotype Phenotype::from(const Genome& gn, float specialization) {
     p.mutScale = mutationScaleOf(gn);
     p.connections = gn.connectionCount();
     p.upkeep = 0.f;
+    p.linkStrength = 1.5f * g[G_LINK];
+    p.detox = g[G_DETOX];
     p.learnRate = 0.05f * g[G_PLASTICITY] * g[G_PLASTICITY] * 4.f; // quadratic: low plasticity is nearly free
     return p;
 }

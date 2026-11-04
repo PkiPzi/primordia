@@ -13,7 +13,7 @@ namespace pm {
 namespace {
 
 constexpr char MAGIC[8] = {'P', 'R', 'I', 'M', 'O', 'R', 'D', 'I'};
-constexpr uint32_t FORMAT_VERSION = 19;
+constexpr uint32_t FORMAT_VERSION = 20;
 
 static_assert(std::is_trivially_copyable_v<Creature>);
 static_assert(std::is_trivially_copyable_v<Corpse>);
@@ -122,6 +122,8 @@ bool World::saveStream(std::ostream& out, std::string& err) const {
     w.vec(t.pheromone);
     w.vec(t.tilled);
     w.vec(t.tiller);
+    w.vec(t.plantDef);
+    w.vec(t.plantSpr);
     w.vec(t.water);
     w.vec(t.rainTile);
 
@@ -246,9 +248,12 @@ bool World::loadStream(std::istream& in, std::string& err) {
     r.vec(t.pheromone);
     r.vec(t.tilled);
     r.vec(t.tiller);
+    r.vec(t.plantDef);
+    r.vec(t.plantSpr);
     r.vec(t.water);
     r.vec(t.rainTile);
-    if (r.ok && (t.tilled.size() != t.plant.size() || t.tiller.size() != t.plant.size())) {
+    if (r.ok && (t.tilled.size() != t.plant.size() || t.tiller.size() != t.plant.size() ||
+                      t.plantDef.size() != t.plant.size() || t.plantSpr.size() != t.plant.size())) {
         err = "Save file is corrupt";
         return false;
     }

@@ -22,10 +22,10 @@ constexpr float SAMPLE_W[4] = {0.4f, 0.3f, 0.2f, 0.1f};
 // Recurrent brain step. Input-major weights: each active input adds a contiguous
 // column into the hidden/output accumulators; silent inputs (most eye channels) are skipped.
 inline void think(const float* __restrict w, const float* __restrict in, const float* __restrict learn,
-                  float* __restrict hid, float* __restrict out) {
+                  const float* __restrict link, float* __restrict hid, float* __restrict out) {
     alignas(32) float h[N_HIDDEN];
     alignas(32) float o[N_OUTPUTS];
-    for (int k = 0; k < N_HIDDEN; ++k) h[k] = w[OFF_BH + k];
+    for (int k = 0; k < N_HIDDEN; ++k) h[k] = w[OFF_BH + k] + link[k];
     for (int q = 0; q < N_OUTPUTS; ++q) o[q] = w[OFF_BO + q];
     for (int i = 0; i < N_INPUTS; ++i) {
         const float x = in[i];
@@ -151,6 +151,8 @@ void Terrain::generate(const WorldSettings& ws) {
     pheromone.assign(n, 0.f);
     tilled.assign(n, 0.f);
     tiller.assign(n, 0u);
+    plantDef.assign(n, 0.05f);
+    plantSpr.assign(n, 0.4f);
     water.assign(n, 0);
 
     Noise2D ne(ws.seed * 31 + 1), nm(ws.seed * 31 + 2), nt(ws.seed * 31 + 3), nw(ws.seed * 31 + 4);
@@ -333,8 +335,11 @@ void World::create(const WorldSettings& ws) {
     settings = ws;
     rng_.reseed(ws.seed, 0x1234);
     terrain.generate(ws);
-    for (size_t i = 0; i < terrain.plant.size(); ++i)
+    for (size_t i = 0; i < terrain.plant.size(); ++i) {
         terrain.plant[i] = terrain.fertility[i] * params.plantCapacity * rng_.range(0.5f, 1.f);
+        terrain.plantDef[i] = rng_.range(0.f, 0.15f);
+        terrain.plantSpr[i] = rng_.range(0.2f, 0.6f);
+    }
 
     creatures.clear();
     creatures.reserve(size_t(params.maxPopulation) + 4096);
@@ -505,6 +510,7 @@ void World::buildGrids() {
     cgrid_.camo.resize(n);
     cgrid_.callA.resize(n);
     cgrid_.callB.resize(n);
+    cgrid_.hid.resize(size_t(n) * N_HIDDEN);
     float maxR = 4.f;
     for (int k = 0; k < n; ++k) {
         const Creature& c = creatures[cgrid_.idx[k]];
@@ -516,6 +522,7 @@ void World::buildGrids() {
         cgrid_.camo[k] = c.camo;
         cgrid_.callA[k] = c.call[0];
         cgrid_.callB[k] = c.call[1];
+        std::copy(c.hid, c.hid + N_HIDDEN, cgrid_.hid.begin() + size_t(k) * N_HIDDEN);
         maxR = std::max(maxR, c.radius);
     }
     maxRadius_ = maxR;
@@ -644,6 +651,9 @@ void World::senseAndThink(int i) {
     const float hearR = std::min(R, 160.f) + 40.f;
     float hearSum = 0.f, hearW = 0.f;
     float hearA = 0.f, hearB = 0.f, dirA = 0.f, dirB = 0.f;
+    float linkSum[N_HIDDEN] = {};
+    float linkCount = 0.f;
+    const bool linkOn = p.linkStrength > 0.02f;
     float flockX = 0.f, flockY = 0.f, crowd = 0.f;
     bool touch = false;
 
@@ -664,6 +674,12 @@ void World::senseAndThink(int i) {
             float w = 1.f - d / hearR;
             hearSum += g.signal[k] * w;
             hearW += w;
+            // Neural link: kin close enough to hear share their hidden state with this brain.
+            if (linkOn && hueDistance(myHue, g.hue[k]) < 0.125f) {
+                const float* kh = g.hid.data() + size_t(k) * N_HIDDEN;
+                for (int q = 0; q < N_HIDDEN; ++q) linkSum[q] += kh[q];
+                linkCount += 1.f;
+            }
             if (g.callA[k] > 0.f || g.callB[k] > 0.f) {
                 const float rel = std::sin(fastAtan2(dy, dx) - c.angle); // +right, -left
                 hearA += w * g.callA[k];
@@ -771,7 +787,27 @@ void World::senseAndThink(int i) {
     in[IN_HEAR_B_DIR] = hearB > 1e-3f ? clampf(dirB / hearB, -1.f, 1.f) : 0.f;
     in[IN_TENDED] = terrain.tilled[cell];
 
-    think(c.genome.w.data(), in, c.learn, c.hid, c.out);
+    alignas(32) float link[N_HIDDEN] = {};
+    c.linkN = linkCount;
+    c.linkSync = 0.f;
+    if (linkCount > 0.f) {
+        float dot = 0.f, nh = 1e-6f, nl = 1e-6f;
+        for (int q = 0; q < N_HIDDEN; ++q) {
+            const float m = linkSum[q] / linkCount;
+            link[q] = p.linkStrength * m;
+            dot += m * c.hid[q];
+            nh += c.hid[q] * c.hid[q];
+            nl += m * m;
+        }
+        c.linkSync = dot / std::sqrt(nh * nl);
+    }
+    in[IN_LINKED] = std::min(1.f, linkCount * 0.25f);
+    think(c.genome.w.data(), in, c.learn, link, c.hid, c.out);
+    // Overclock: extra thinking steps within the same tick (alien: subjective time speeds up).
+    if (c.out[OUT_OVERCLOCK] > 0.5f) {
+        think(c.genome.w.data(), in, c.learn, link, c.hid, c.out);
+        think(c.genome.w.data(), in, c.learn, link, c.hid, c.out);
+    }
 }
 
 void World::kill(Creature& c, DeathCause cause) {
@@ -791,12 +827,13 @@ void World::interact() {
         const int i = order_[oi];
         Creature& c = creatures[i];
         if (!c.alive) continue;
-        c.flags &= ~(CF_EATING | CF_ATTACKING | CF_SHARING | CF_MATED | CF_HIT | CF_POISONED);
+        c.flags &= ~(CF_EATING | CF_ATTACKING | CF_SHARING | CF_MATED | CF_HIT | CF_POISONED | CF_BLINK);
+        const bool ghost = c.out[OUT_PHASE] > 0.3f; // phased: cannot eat or attack, cannot be attacked
         const Phenotype& p = c.ph;
         const Vec2 dir = fromAngle(c.angle);
 
         // --- Eating ---------------------------------------------------------
-        if (c.out[OUT_EAT] > 0.f) {
+        if (c.out[OUT_EAT] > 0.f && !ghost) {
             const float eager = 0.5f + 0.5f * c.out[OUT_EAT];
             const Vec2 mouth = c.pos + dir * (c.radius * 0.8f);
             if (p.plantEff > 0.01f) {
@@ -809,6 +846,11 @@ void World::interact() {
                 for (int yy = y0; yy <= y1; ++yy)
                     for (int xx = x0; xx <= x1; ++xx) avail += terrain.plant[yy * terrain.cols + xx];
                 float bite = std::min(avail, 0.5f * std::pow(c.mass, 0.9f) * eager);
+                // Evolved plant chemistry: defended plants taste bad (smaller bites) and poison grazers
+                // that have not evolved detox.
+                const float pdef = terrain.plantDef[size_t(terrain.index(mouth.x, mouth.y))];
+                const float harm = pdef * (1.f - p.detox);
+                bite *= 1.f - 0.5f * harm;
                 // Hawk-dove food contest with whoever already grazed this patch this tick.
                 if (params.foodContests && bite > 0.f) {
                     const size_t cell = size_t(terrain.index(mouth.x, mouth.y));
@@ -856,6 +898,12 @@ void World::interact() {
                     const float take = bite / avail;
                     for (int yy = y0; yy <= y1; ++yy)
                         for (int xx = x0; xx <= x1; ++xx) terrain.plant[yy * terrain.cols + xx] *= 1.f - take;
+                    if (harm > 0.05f) {
+                        c.health -= bite * harm * 0.5f;
+                        c.pain = std::min(1.f, c.pain + harm * 0.1f);
+                        c.flags |= CF_POISONED;
+                        if (c.health <= 0.f) kill(c, DeathCause::Poison);
+                    }
                     float gain = bite * params.plantEnergy * p.plantEff;
                     c.energy += gain;
                     c.hydration = std::min(1.f, c.hydration + bite * 0.025f); // juicy grass carries some water
@@ -894,7 +942,7 @@ void World::interact() {
         if (!c.alive) continue;
 
         // --- Attacking ------------------------------------------------------
-        if (c.out[OUT_ATTACK] > 0.f) {
+        if (c.out[OUT_ATTACK] > 0.f && !ghost) {
             c.flags |= CF_ATTACKING;
             c.energy -= 0.012f * c.mass * c.out[OUT_ATTACK] * params.metabolism;
             int target = -1;
@@ -903,7 +951,7 @@ void World::interact() {
                 int j = cgrid_.idx[k];
                 if (j == i) return;
                 const Creature& t = creatures[j];
-                if (!t.alive) return;
+                if (!t.alive || t.out[OUT_PHASE] > 0.3f) return;
                 Vec2 d = t.pos - c.pos;
                 float gap = d.length() - c.radius - t.radius;
                 if (gap > 4.f) return;
@@ -1098,13 +1146,28 @@ void World::moveAndMetabolize(int i) {
     if (inWater) c.flags |= CF_IN_WATER;
     else c.flags &= ~CF_IN_WATER;
     const Vec2 dir = fromAngle(c.angle);
+    // Blink (alien): a costly teleport along the heading, then a long cooldown. Never lands in water.
+    if (c.blinkCd > 0) --c.blinkCd;
+    if (c.out[OUT_BLINK] > 0.5f && c.blinkCd <= 0 && c.energy > 0.3f * c.maxEnergy) {
+        Vec2 np = c.pos + dir * (60.f + 5.f * c.radius);
+        np.x = clampf(np.x, c.radius, terrain.width - c.radius);
+        np.y = clampf(np.y, c.radius, terrain.height - c.radius);
+        if (!terrain.water[terrain.index(np.x, np.y)]) {
+            c.pos = np;
+            c.vel *= 0.3f;
+            c.energy -= 0.05f * c.maxEnergy;
+            c.blinkCd = 300;
+            c.flags |= CF_BLINK;
+        }
+    }
+    const bool phased = c.out[OUT_PHASE] > 0.3f;
     c.vel += dir * (p.accel * thrust * (inWater ? 0.45f : 1.f));
     c.vel *= inWater ? 0.80f : 0.88f;
 
     Vec2 push;
     const SpatialGrid& g = cgrid_;
     g.query(c.pos.x, c.pos.y, c.radius + maxRadius_, [&](int k) {
-        if (g.idx[k] == i) return;
+        if (g.idx[k] == i || phased) return; // a phased creature passes through bodies
         float dx = c.pos.x - g.x[k], dy = c.pos.y - g.y[k];
         float minD = c.radius + g.r[k];
         float d2 = dx * dx + dy * dy;
@@ -1141,6 +1204,9 @@ void World::moveAndMetabolize(int i) {
     const float voice = 0.0025f * (c.call[0] + c.call[1]);
     const float tendCost = 0.008f * c.mass075 * c.tend;
     const float plasticity = 0.0015f * c.mass075 * sq(c.genome.g[G_PLASTICITY]);
+    const float alien = 0.003f * c.mass075 * (sq(c.genome.g[G_LINK]) + sq(c.genome.g[G_DETOX])) +
+                        (c.out[OUT_OVERCLOCK] > 0.5f ? 0.004f * c.mass075 + 0.00003f * float(p.connections) : 0.f) +
+                        (phased ? 0.006f * c.mass075 : 0.f);
     const float immuneCost = 0.004f * c.mass075 * p.immunity + 0.003f * c.mass075 * p.nightVision;
     float disease = 0.f;
     if (c.infection > 0.f) {
@@ -1163,7 +1229,7 @@ void World::moveAndMetabolize(int i) {
     }
     const float pher = c.out[OUT_PHEROMONE] > 0.f ? 0.003f * c.out[OUT_PHEROMONE] : 0.f;
     c.energy -= (basal + toxin + move + turnCost + vision + brain + thermal + signal + pher + immuneCost + disease + voice +
-                 tendCost + plasticity) *
+                 tendCost + plasticity + alien) *
                 params.metabolism;
 
     if (c.energy <= 0.f) {
@@ -1267,6 +1333,14 @@ void World::updateEnvironment() {
             float& ph = t.pheromone[t.index(c.pos.x, c.pos.y)];
             ph = std::min(4.f, ph + 0.2f * c.pheromone);
         }
+    for (const Creature& c : creatures)
+        if (c.flags & CF_BLINK) {
+            BehaviorAcc& a = behaviorOf(c.speciesId);
+            a.blinks += 1.f;
+            if (c.pain > 0.25f) a.blinkHurt += 1.f;
+            if (c.out[OUT_ATTACK] > 0.f) a.blinkAttack += 1.f;
+            pushFx(FxEvent::Birth, c.pos, {0.4f, 0.9f, 1.f, 1.f}, c.radius * 1.5f);
+        }
     // Niche construction: tending raises a cell and its neighbours (the creature's own cell the most).
     for (const Creature& c : creatures)
         if (c.tend > 0.05f) {
@@ -1296,6 +1370,8 @@ void World::updateEnvironment() {
             const float* fert = t.fertility.data() + size_t(row) * t.cols;
             const float* temp = t.baseTemp.data() + size_t(row) * t.cols;
             float* tilled = t.tilled.data() + size_t(row) * t.cols;
+            const float* pdef = t.plantDef.data() + size_t(row) * t.cols;
+            const float* pspr = t.plantSpr.data() + size_t(row) * t.cols;
             for (int col = 0; col < t.cols; ++col) {
                 pher[col] = pher[col] > 1e-3f ? pher[col] * decay : 0.f;
                 const float till = tilled[col];
@@ -1311,11 +1387,43 @@ void World::updateEnvironment() {
                 float tf = 1.f - sq((T - 0.25f) / 0.85f);
                 if (params.weather) tf *= 0.45f + 1.25f * rainAt((float(col) + 0.5f) * t.cellSize, (float(row) + 0.5f) * t.cellSize);
                 if (P > K) P -= (P - K) * 0.002f;
-                else if (tf > 0.f) P += rate * (1.f + till) * tf * (P + 0.03f * K) * (1.f - P / K);
+                else if (tf > 0.f) P += rate * (1.f + till) * (1.f - 0.45f * pdef[col]) * (1.f - 0.25f * pspr[col]) * tf * (P + 0.03f * K) * (1.f - P / K);
                 plant[col] = std::max(0.f, P);
             }
         }
     });
+
+    // Flora evolution: where a neighbour holds much more biomass than a cell, its seedlings may take the cell over,
+    // inheriting its defence and dispersal with a little mutation. Grazing therefore selects for defended plants,
+    // while the growth cost of defence favours open, undefended ones elsewhere.
+    if (tickCount % 20 == 0) {
+        plantDef2_.resize(t.plantDef.size());
+        plantSpr2_.resize(t.plantSpr.size());
+        const float uni = 1.f / 1023.f;
+        pool_->parallelFor(0, t.rows, 4, [&](int r0, int r1, int) {
+            for (int row = r0; row < r1; ++row)
+                for (int col = 0; col < t.cols; ++col) {
+                    const size_t i = size_t(row) * t.cols + col;
+                    plantDef2_[i] = t.plantDef[i];
+                    plantSpr2_[i] = t.plantSpr[i];
+                    if (t.water[i] || t.fertility[i] <= 0.f) continue;
+                    uint32_t h = uint32_t(i) * 2654435761u ^ uint32_t(tickCount) * 40503u;
+                    h ^= h >> 15; h *= 2246822519u; h ^= h >> 13;
+                    static const int DX[4] = {1, -1, 0, 0}, DY[4] = {0, 0, 1, -1};
+                    const int x = col + DX[h & 3], y = row + DY[h & 3];
+                    if (x < 0 || y < 0 || x >= t.cols || y >= t.rows) continue;
+                    const size_t j = size_t(y) * t.cols + x;
+                    if (t.plant[j] <= t.plant[i] * 1.25f + 0.04f * cap) continue;
+                    const float chance = 0.15f + 0.6f * t.plantSpr[j] * clamp01(t.plant[j] / cap);
+                    if (float((h >> 4) & 1023) * uni >= chance) continue;
+                    const float m1 = float((h >> 14) & 255) / 127.5f - 1.f, m2 = float((h >> 22) & 255) / 127.5f - 1.f;
+                    plantDef2_[i] = clamp01(t.plantDef[j] + 0.05f * m1);
+                    plantSpr2_[i] = clamp01(t.plantSpr[j] + 0.05f * m2);
+                }
+        });
+        t.plantDef.swap(plantDef2_);
+        t.plantSpr.swap(plantSpr2_);
+    }
 
     for (size_t i = 0; i < corpses.size();) {
         Corpse& m = corpses[i];
@@ -1454,9 +1562,15 @@ void World::sampleStats() {
     }
     s.population = float(n);
     s.species = float(species.aliveCount());
-    double plants = 0;
-    for (float p : terrain.plant) plants += p;
+    double plants = 0, defW = 0, sprW = 0;
+    for (size_t i = 0; i < terrain.plant.size(); ++i) {
+        plants += terrain.plant[i];
+        defW += double(terrain.plant[i]) * terrain.plantDef[i];
+        sprW += double(terrain.plant[i]) * terrain.plantSpr[i];
+    }
     s.plants = float(plants);
+    s.plantDefence = plants > 0 ? float(defW / plants) : 0.f;
+    s.plantSpread = plants > 0 ? float(sprW / plants) : 0.f;
     double meat = 0;
     for (const Corpse& m : corpses) meat += m.energy;
     s.meat = float(meat);

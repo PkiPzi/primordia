@@ -97,6 +97,7 @@ struct Terrain {
     std::vector<float> elevation, moisture, fertility, climateBase, baseTemp, plant, pheromone;
     std::vector<float> tilled;        // 0..1: how well-tended each cell is (niche construction), boosts plant growth
     std::vector<uint32_t> tiller;     // species that last tended the cell
+    std::vector<float> plantDef, plantSpr; // evolving flora: chemical defence and seed dispersal of each cell's plants
     std::vector<uint8_t> water;
     static constexpr int RAIN_TILE = 64;
     std::vector<float> rainTile; // tileable rain-cloud pattern, RAIN_TILE x RAIN_TILE
@@ -126,6 +127,7 @@ enum CreatureFlags : uint32_t {
     CF_MATED = 1u << 5,
     CF_POISONED = 1u << 6,
     CF_HIT = 1u << 7, // landed an attack this tick
+    CF_BLINK = 1u << 12, // teleported this tick
     CF_SICK = 1u << 10,
     CF_IMMUNE = 1u << 11,
 };
@@ -145,6 +147,8 @@ struct Creature {
     float call[2]{};         // voice channels A and B this tick (0..1); their meaning is not assigned, it evolves
     float tend = 0.f;        // effort spent cultivating the ground this tick
     float lastEnergy = 0.f;  // for the learning reward signal
+    int blinkCd = 0;         // ticks until the next blink is possible
+    float linkN = 0.f, linkSync = 0.f; // linked kin this tick, and how in step their thoughts are
     float temperature = 0.f;
     float hydration = 1.f;   // 0 = parched, 1 = fully watered
     float infection = 0.f;   // ticks of illness remaining
@@ -188,6 +192,7 @@ struct SpatialGrid {
     int cols = 1, rows = 1;
     std::vector<int> start, idx, cellOf, fill;
     std::vector<float> x, y, r, hue, signal, mass, angle, camo, callA, callB;
+    std::vector<float> hid; // N_HIDDEN floats per point, for the neural link
     void resize(float w, float h, float cellSize);
     // Counting sort of n points into cells; fills idx/x/y. Extra fields are filled by the caller.
     template <class GetPos>
@@ -246,14 +251,17 @@ const AchievementInfo& achievementInfo(int i);
 
 // Rolling per-species tallies the behaviour detector (Discoveries.cpp) turns into journal entries.
 struct BehaviorAcc {
-    static constexpr int CTX = 5; // hurt, sees a bigger creature, eating, ready to breed, starving
+    static constexpr int CTX = 6; // hurt, sees a bigger creature, eating, ready to breed, starving, attacking
+    static constexpr int ACT = 4; // call A, call B, overclock, phase shift
     float n = 0;                   // creature-samples
     float nCtx[CTX]{};
-    float calling[2]{};            // samples that were calling, per channel
-    float callingIn[2][CTX]{};
+    float acting[ACT]{};           // samples performing each action
+    float actingIn[ACT][CTX]{};
     float nHear[2]{}, spdHear[2]{}, nQuiet[2]{}, spdQuiet[2]{};
     float bites = 0, bitesOwn = 0, bitesOther = 0; // grazing bites by whose soil they came from
     float tenders = 0;
+    float blinks = 0, blinkHurt = 0, blinkAttack = 0; // teleports and what the blinker was doing
+    float linkN = 0, linkSync = 0, linkers = 0;       // neural-link partners and thought synchrony
     uint32_t otherTiller = 0;      // species whose fields were poached most recently
 };
 
@@ -384,6 +392,7 @@ private:
     std::unordered_set<uint64_t> announced_;          // (species, bucket, tag) already in the journal
     std::vector<std::array<float, G_COUNT>> prevGenes_; // species mean genes one year ago
     int64_t lastGeneYear_ = -1;
+    std::vector<float> plantDef2_, plantSpr2_; // scratch buffers for the flora takeover pass
     float recentPeak_ = 0.f;
 };
 

@@ -79,6 +79,17 @@ Mutation adds and prunes synapses, so brain complexity itself evolves against an
 - *Niche construction.* A "tend soil" output cultivates the ground, raising plant growth there for a while. Farmers,
   and thieves who graze other species' fields, can evolve.
 
+**Alien traits (no counterpart in nature):**
+- *Neural link.* A gene couples a brain's hidden state to the thoughts of nearby kin, so neighbours can think partly
+  together. A hive-mind species is possible.
+- *Blink.* A costly teleport along the heading with a long cooldown (ambush leaps, escape jumps).
+- *Overclock.* Extra brain steps per tick for extra energy: subjective time speeds up.
+- *Phase shift.* An intangible mode: cannot be bitten, cannot eat or attack, drains energy.
+
+**Evolving plants.** Every map cell's plants carry a chemical-defence and a seed-dispersal trait. Seedlings from
+lush neighbours take over grazed cells with mutation, defence slows growth, and herbivores can evolve a detox gene,
+so a plant-herbivore arms race can unfold. Overlay and journal entries report it.
+
 ## Discoveries
 
 Events panel > **Discoveries** is a journal of behaviours the simulation produced on its own. A detector watches each
