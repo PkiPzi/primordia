@@ -1853,7 +1853,7 @@ void Ui::drawSpecies(AppState& app) {
     if (app.rs->highlightSpecies && w.species.valid(app.rs->highlightSpecies)) {
         const Species& hs = w.species.get(app.rs->highlightSpecies);
         ImGui::PushStyleColor(ImGuiCol_ChildBg, C_PANEL);
-        ImGui::BeginChild("##card", ImVec2(0, 178), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
+        ImGui::BeginChild("##card", ImVec2(0, 200), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
         // Radar chart of the species' average body plan.
         static const int axes[] = {G_SIZE, G_SPEED, G_DIET, G_ARMOR, G_WEAPON, G_TOXIN, G_VISION_RANGE, G_IMMUNITY, G_LITTER};
         static const char* axisNames[] = {"Size", "Speed", "Meat", "Armor", "Weapon", "Toxin", "Sight", "Immune", "Litter"};
@@ -1932,6 +1932,18 @@ void Ui::drawSpecies(AppState& app) {
         d += ".";
         ImGui::PushTextWrapPos(ImGui::GetContentRegionMax().x);
         ImGui::TextUnformatted(d.c_str());
+        if (hs.alive()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, C_GREEN);
+            ImGui::TextWrapped(ICON_STAR " Best at: %s", w.bestAtText(hs.id).c_str());
+            ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered())
+                if (const SpeciesSkills* sk = w.skillsOf(hs.id)) {
+                    ImGui::BeginTooltip();
+                    ImGui::TextUnformatted("Skill vs the other living species (standard score)");
+                    for (int k = 0; k < N_SKILLS; ++k) ImGui::Text("%-18s %+.1f", skillName(k), sk->z[k]);
+                    ImGui::EndTooltip();
+                }
+        }
         ImGui::PushStyleColor(ImGuiCol_Text, C_MUTED);
         ImGui::Text("%s · %d alive · peak %d · %llu born", hs.alive() ? "Extant" : "Extinct", hs.population,
                     hs.peakPopulation, (unsigned long long)hs.totalBorn);
@@ -2299,6 +2311,10 @@ void Ui::drawEvents(AppState& app) {
                     std::snprintf(yr, sizeof yr, "%.2f", double(e.tick) / w.params.yearLength);
                     f << "- **Year " << yr << "** " << e.text << "\n";
                 }
+            f << "\n## What each living species does best\n\n";
+            for (const Species& sp : w.species.all())
+                if (sp.alive() && sp.population >= 15)
+                    f << "- **" << sp.name() << "** (" << sp.population << " alive): " << w.bestAtText(sp.id) << "\n";
             app.notify(f ? "Journal saved to " + path : "Could not write " + path);
         }
         ImGui::BeginChild("##disclist");

@@ -265,6 +265,16 @@ struct BehaviorAcc {
     uint32_t otherTiller = 0;      // species whose fields were poached most recently
 };
 
+// What each species is good at, refreshed at every census (see Discoveries.cpp).
+constexpr int N_SKILLS = 12;
+const char* skillName(int i);
+struct SpeciesSkills {
+    bool valid = false;            // enough living adults to rank
+    float raw[N_SKILLS]{};
+    float z[N_SKILLS]{};           // standard score against the other living species
+    int best[3] = {-1, -1, -1};    // standout skills, strongest first
+};
+
 struct TickTimings {
     double grid = 0, sense = 0, interact = 0, move = 0, env = 0, book = 0, total = 0;
 };
@@ -343,6 +353,11 @@ public:
     DeathCause watchCause = DeathCause::None;
     int64_t watchDeathTick = -1;
     float maxPlantCap() const { return params.plantCapacity; }
+    std::vector<SpeciesSkills> skills;  // indexed by species id - 1
+    const SpeciesSkills* skillsOf(uint32_t speciesId) const {
+        return speciesId >= 1 && speciesId <= skills.size() && skills[speciesId - 1].valid ? &skills[speciesId - 1] : nullptr;
+    }
+    std::string bestAtText(uint32_t speciesId) const; // e.g. "Hunting, Speed, Brainpower" or "no standout skill"
 
 private:
     void buildGrids();

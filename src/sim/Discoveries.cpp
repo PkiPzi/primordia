@@ -2,6 +2,7 @@
 // interesting parts into the event log as EventKind::Discovery entries (the "Discoveries" tab).
 #include <algorithm>
 #include <cmath>
+#include <array>
 #include <cstdio>
 
 #include "sim/World.hpp"
@@ -42,6 +43,21 @@ std::string pct(float v) {
 }
 
 } // namespace
+
+const char* skillName(int i) {
+    static const char* names[N_SKILLS] = {"Grazing",  "Hunting",  "Speed",         "Long life", "Breeding", "Sharing",
+                                          "Calling",  "Farming",  "Lifetime learning", "Hive thinking", "Alien tricks",
+                                          "Toughness"};
+    return names[i];
+}
+
+std::string World::bestAtText(uint32_t speciesId) const {
+    const SpeciesSkills* sk = skillsOf(speciesId);
+    if (!sk) return "too few adults to rank";
+    std::string t;
+    for (int k = 0; k < 3 && sk->best[k] >= 0; ++k) t += (k ? ", " : "") + std::string(skillName(sk->best[k]));
+    return t.empty() ? "no standout skill" : t;
+}
 
 BehaviorAcc& World::behaviorOf(uint32_t speciesId) {
     if (behav_.size() < species.all().size()) behav_.resize(species.all().size());
@@ -92,6 +108,64 @@ void World::scanBehaviours() {
         float l1 = 0.f;
         for (int j = 0; j < N_LEARN; ++j) l1 += std::fabs(c.learn[j]);
         learned[c.speciesId - 1] += l1 / float(N_LEARN);
+    }
+
+    // 1b. Skill profile of each species: what it does best compared with the others alive.
+    {
+        const size_t ns = behav_.size();
+        skills.assign(ns, SpeciesSkills{});
+        std::vector<std::array<double, N_SKILLS>> sum(ns);
+        std::vector<int> cnt(ns, 0);
+        for (auto& row : sum) row.fill(0.0);
+        for (const Creature& c : creatures) {
+            if (!species.valid(c.speciesId) || c.growth < 1.f) continue;
+            auto& v = sum[c.speciesId - 1];
+            const double age = double(c.age) + 1.0;
+            float l1 = 0.f;
+            for (int j = 0; j < N_LEARN; ++j) l1 += std::fabs(c.learn[j]);
+            v[0] += c.eatenPlant / age * 100.0;                            // grazing: energy per 100 ticks of life
+            v[1] += c.eatenMeat / age * 100.0 + c.kills * 100.0 / age;     // hunting
+            v[2] += c.vel.length();                                         // speed
+            v[3] += c.ph.lifespan / 10000.0;                                // long life
+            v[4] += c.children * 1000.0 / age;                              // breeding
+            v[5] += c.shared / age * 100.0;                                 // sharing
+            v[6] += (c.call[0] > 0.3f || c.call[1] > 0.3f) ? 1.0 : 0.0;     // calling
+            v[8] += l1 / float(N_LEARN);                                    // lifetime learning
+            v[9] += c.linkN > 0.f ? c.linkSync * std::min(c.linkN, 4.f) / 4.f : 0.f; // hive thinking
+            v[11] += c.ph.armor + c.ph.toxin;                               // toughness
+            ++cnt[c.speciesId - 1];
+        }
+        // Absolute floors: a skill nobody really has is never "best".
+        static const double FLOOR[N_SKILLS] = {0, 0, 0, 0, 0, 0.002, 0.05, 0.05, 0.05, 0.1, 0.02, 0};
+        std::vector<size_t> ok;
+        for (size_t s = 0; s < ns; ++s) {
+            if (cnt[s] < 15 || !species.all()[s].alive()) continue;
+            const BehaviorAcc& a = behav_[s];
+            for (int k = 0; k < N_SKILLS; ++k) sum[s][size_t(k)] /= cnt[s];
+            sum[s][7] = a.n > 0 ? double(a.tenders) / a.n + (a.bites > 0 ? 0.5 * a.bitesOwn / a.bites : 0.0) : 0.0;
+            sum[s][10] = a.n > 0 ? double(a.acting[2] + a.acting[3] + a.blinks) / a.n : 0.0;
+            for (int k = 0; k < N_SKILLS; ++k) skills[s].raw[k] = float(sum[s][size_t(k)]);
+            skills[s].valid = true;
+            ok.push_back(s);
+        }
+        if (ok.size() >= 3)
+            for (int k = 0; k < N_SKILLS; ++k) {
+                double m = 0, v = 0;
+                for (size_t s : ok) m += skills[s].raw[k];
+                m /= double(ok.size());
+                for (size_t s : ok) v += (skills[s].raw[k] - m) * (skills[s].raw[k] - m);
+                const double sd = std::sqrt(v / double(ok.size()));
+                if (sd < 1e-9) continue;
+                for (size_t s : ok) skills[s].z[k] = float((skills[s].raw[k] - m) / sd);
+            }
+        for (size_t s : ok) {
+            int order[N_SKILLS];
+            for (int k = 0; k < N_SKILLS; ++k) order[k] = k;
+            std::sort(order, order + N_SKILLS, [&](int a, int b) { return skills[s].z[a] > skills[s].z[b]; });
+            int n = 0;
+            for (int k = 0; k < N_SKILLS && n < 3; ++k)
+                if (skills[s].z[order[k]] >= 1.0f && skills[s].raw[order[k]] > FLOOR[order[k]]) skills[s].best[n++] = order[k];
+        }
     }
 
     // 2. Look for behaviours that clearly stand out. Not in the first half year: founders are random genomes.

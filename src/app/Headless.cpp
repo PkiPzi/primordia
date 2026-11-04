@@ -158,6 +158,10 @@ int runHeadless(const Options& opt) {
         const double n = std::max<size_t>(1, world.creatures.size());
         std::printf("Behaviour now: plasticity gene %.2f, mean learned offset %.3f, calling A %.1f%% B %.1f%%, tending %.1f%%\n",
                     plast / n, learned / n / N_LEARN, 100 * callA / n, 100 * callB / n, 100 * tend / n);
+        std::printf("Species profiles (15+ alive):\n");
+        for (const Species& sp : world.species.all())
+            if (sp.alive() && sp.population >= 15)
+                std::printf("  %-28s %4d alive  best at: %s\n", sp.name().c_str(), sp.population, world.bestAtText(sp.id).c_str());
         std::printf("Discoveries:\n");
         for (const WorldEvent& e : world.events.items)
             if (e.kind == EventKind::Discovery)
