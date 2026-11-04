@@ -1,0 +1,5 @@
+build/
+build-*/
+saves/
+*.prim
+compile_commands.json
