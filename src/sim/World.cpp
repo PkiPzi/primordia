@@ -674,13 +674,24 @@ void World::senseAndThink(int i) {
     bool touch = false;
 
     const SpatialGrid& g = cgrid_;
-    g.query(px, py, std::max(fullR, hearR) + maxRadius_, [&](int k) {
+    // shortcut: in dense crowds only every 2nd/4th far neighbour is sensed, with its weight scaled up to match.
+    // Near neighbours (within 70 units) are always processed. Revisit if crowd behaviour looks off.
+    const float scanR = std::max(fullR, hearR) + maxRadius_;
+    const int candidates = g.countNear(px, py, scanR);
+    const uint32_t stride = candidates > 192 ? 4u : candidates > 96 ? 2u : 1u;
+    const uint32_t phase = uint32_t(c.id) + uint32_t(tickCount);
+    g.query(px, py, scanR, [&](int k) {
         if (g.idx[k] == i) return;
         const float dx = g.x[k] - px, dy = g.y[k] - py;
         const float d2 = dx * dx + dy * dy;
         const float rk = g.r[k];
         // Cheap reject: nobody can be seen beyond full range, nor heard beyond hearR.
         { const float far = fullR + rk; if (d2 > far * far && d2 > hearR * hearR) return; }
+        float mult = 1.f;
+        if (stride > 1 && d2 > 4900.f) {
+            if ((uint32_t(k) + phase) & (stride - 1)) return;
+            mult = float(stride);
+        }
         // Bioluminescent (signalling) creatures stay visible in the dark.
         const float glow = clamp01((std::fabs(g.signal[k]) - 0.2f) * 1.25f);
         const float effR = (R + (fullR - R) * glow) * (1.f - g.camo[k] * (1.f - glow));
@@ -689,14 +700,14 @@ void World::senseAndThink(int i) {
         const float d = std::sqrt(d2);
         if (d < c.radius + rk + 1.5f) touch = true;
         if (d < hearR) {
-            float w = 1.f - d / hearR;
+            float w = (1.f - d / hearR) * mult;
             hearSum += g.signal[k] * w;
             hearW += w;
             // Neural link: kin close enough to hear share their hidden state with this brain.
             if (linkOn && hueDistance(myHue, g.hue[k]) < 0.125f) {
                 const float* kh = g.hid.data() + size_t(k) * N_HIDDEN;
-                for (int q = 0; q < N_HIDDEN; ++q) linkSum[q] += kh[q];
-                linkCount += 1.f;
+                for (int q = 0; q < N_HIDDEN; ++q) linkSum[q] += kh[q] * mult;
+                linkCount += mult;
             }
             if (g.callA[k] > 0.f || g.callB[k] > 0.f) {
                 const float rel = std::sin(fastAtan2(dy, dx) - c.angle); // +right, -left

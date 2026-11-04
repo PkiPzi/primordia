@@ -71,7 +71,7 @@ struct SimParams {
     bool sexualReproduction = true;
     // Population
     int maxPopulation = 12000;
-    float shocksPerYear = 1.0f;     // random catastrophes and windfalls (meteor, drought, volcano, bloom, climate, plague)
+    float shocksPerYear = 0.0f;     // random catastrophes and windfalls (meteor, drought, volcano, bloom, climate, plague)
     int thinkEvery = 2;             // each brain runs every Nth tick (outputs persist in between): the big speed lever
     bool autoReseed = true;
     int reseedBelow = 30;
@@ -225,6 +225,15 @@ struct SpatialGrid {
             x[k] = p.x;
             y[k] = p.y;
         }
+    }
+    // Number of points in the cells a query of this radius would visit (an upper bound on its candidates).
+    int countNear(float px, float py, float radius) const {
+        int x0 = std::max(0, int((px - radius) / cell)), x1 = std::min(cols - 1, int((px + radius) / cell));
+        int y0 = std::max(0, int((py - radius) / cell)), y1 = std::min(rows - 1, int((py + radius) / cell));
+        int n = 0;
+        for (int cy = y0; cy <= y1; ++cy)
+            for (int cx = x0; cx <= x1; ++cx) n += start[cy * cols + cx + 1] - start[cy * cols + cx];
+        return n;
     }
     template <class F>
     void query(float px, float py, float radius, F&& f) const {

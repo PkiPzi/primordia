@@ -55,7 +55,7 @@ void printUsage() {
         "  --seed N            World seed (default: random)\n"
         "  --size N            World width/height in units (default 4096)\n"
         "  --population N      Initial population\n"
-        "  --shocks X          Random shocks (meteor, drought...) per year; 0 = none (default 1)\n"
+        "  --shocks X          Random shocks (meteor, drought...) per year (default 0 = none)\n"
         "  --think-every N     Each brain runs every Nth tick (1 = every tick, default 2; faster, slightly coarser)\n"
         "  --threads N         Simulation threads (default: all cores)\n"
         "  --load FILE         Load a saved world\n"
