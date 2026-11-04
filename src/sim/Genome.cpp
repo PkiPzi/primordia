@@ -428,6 +428,12 @@ Phenotype Phenotype::from(const Genome& gn, float specialization) {
     p.connections = gn.connectionCount();
     p.upkeep = 0.f;
     p.linkStrength = 1.5f * g[G_LINK];
+    {
+        const float step = p.fov / float(NUM_EYES);
+        const float off = -0.5f * p.fov + 0.5f * step;
+        p.cOff = std::cos(off); p.sOff = std::sin(off);
+        p.cStep = std::cos(step); p.sStep = std::sin(step);
+    }
     p.detox = g[G_DETOX];
     p.learnRate = 0.05f * g[G_PLASTICITY] * g[G_PLASTICITY] * 4.f; // quadratic: low plasticity is nearly free
     return p;

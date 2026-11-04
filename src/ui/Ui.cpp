@@ -2539,6 +2539,9 @@ void Ui::drawEnvironment(AppState& app) {
     }
     if (ImGui::CollapsingHeader(ICON_USERS "  Population")) {
         ImGui::SliderInt("Max population", &p.maxPopulation, 500, 30000);
+        ImGui::SliderInt("Brain tick rate", &p.thinkEvery, 1, 4, p.thinkEvery == 1 ? "every tick" : "every %d ticks");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+            ImGui::SetTooltip("Each brain thinks every Nth tick (staggered; its outputs persist in between). Higher = much faster simulation, slightly coarser reactions.");
         ImGui::Checkbox("Reseed if life dies out", &p.autoReseed);
         ImGui::Checkbox("Predator immigration", &p.predatorImmigration);
         ImGui::Checkbox("Creatures need water", &p.thirst);

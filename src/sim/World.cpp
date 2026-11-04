@@ -300,6 +300,8 @@ Creature World::makeCreature(const Genome& g, Vec2 pos, uint32_t speciesId, uint
     c.ph = Phenotype::from(g, params.specialization);
     c.pos = pos;
     c.angle = rng_.range(-PI, PI);
+    c.ca = std::cos(c.angle);
+    c.sa = std::sin(c.angle);
     c.growth = growth;
     c.rng = Rng(rng_.next64(), c.id);
     updateBody(c);
@@ -507,6 +509,8 @@ void World::buildGrids() {
     cgrid_.signal.resize(n);
     cgrid_.mass.resize(n);
     cgrid_.angle.resize(n);
+    cgrid_.cosA.resize(n);
+    cgrid_.sinA.resize(n);
     cgrid_.camo.resize(n);
     cgrid_.callA.resize(n);
     cgrid_.callB.resize(n);
@@ -519,6 +523,8 @@ void World::buildGrids() {
         cgrid_.signal[k] = c.signal;
         cgrid_.mass[k] = c.mass;
         cgrid_.angle[k] = c.angle;
+        cgrid_.cosA[k] = c.ca;
+        cgrid_.sinA[k] = c.sa;
         cgrid_.camo[k] = c.camo;
         cgrid_.callA[k] = c.call[0];
         cgrid_.callB[k] = c.call[1];
@@ -562,7 +568,8 @@ float World::rainAt(float x, float y) const {
     float u = x / rainScale() * T + off.x, v = y / rainScale() * T + off.y;
     int x0 = int(std::floor(u)), y0 = int(std::floor(v));
     float fx = u - float(x0), fy = v - float(y0);
-    auto at = [&](int i, int j) { return terrain.rainTile[size_t(((j % T) + T) % T) * T + size_t(((i % T) + T) % T)]; };
+    static_assert((Terrain::RAIN_TILE & (Terrain::RAIN_TILE - 1)) == 0, "tile size must be a power of two for the mask");
+    auto at = [&](int i, int j) { return terrain.rainTile[size_t(j & (T - 1)) * T + size_t(i & (T - 1))]; };
     return lerp(lerp(at(x0, y0), at(x0 + 1, y0), fx), lerp(at(x0, y0 + 1), at(x0 + 1, y0 + 1), fx), fy);
 }
 
@@ -626,6 +633,8 @@ float World::temperatureAtCell(int idx) const {
 
 void World::senseAndThink(int i) {
     Creature& c = creatures[i];
+    // Staggered brains: each creature thinks on its own phase, so the load is even and outputs persist in between.
+    if (params.thinkEvery > 1 && (uint64_t(c.id) + uint64_t(tickCount)) % uint64_t(params.thinkEvery) != 0) return;
     float* in = c.in;
     std::fill(in, in + N_INPUTS, 0.f);
     const Phenotype& p = c.ph;
@@ -663,6 +672,8 @@ void World::senseAndThink(int i) {
         const float dx = g.x[k] - px, dy = g.y[k] - py;
         const float d2 = dx * dx + dy * dy;
         const float rk = g.r[k];
+        // Cheap reject: nobody can be seen beyond full range, nor heard beyond hearR.
+        { const float far = fullR + rk; if (d2 > far * far && d2 > hearR * hearR) return; }
         // Bioluminescent (signalling) creatures stay visible in the dark.
         const float glow = clamp01((std::fabs(g.signal[k]) - 0.2f) * 1.25f);
         const float effR = (R + (fullR - R) * glow) * (1.f - g.camo[k] * (1.f - glow));
@@ -690,8 +701,8 @@ void World::senseAndThink(int i) {
             // Flocking cues: neighbours' headings (kin weighted more) and crowding.
             float kin = 1.f - 2.f * hueDistance(myHue, g.hue[k]);
             float fw = w * (0.3f + 0.7f * std::max(0.f, kin));
-            flockX += std::cos(g.angle[k]) * fw;
-            flockY += std::sin(g.angle[k]) * fw;
+            flockX += g.cosA[k] * fw;
+            flockY += g.sinA[k] * fw;
             crowd += w;
         }
         if (d > lim) return;
@@ -723,11 +734,15 @@ void World::senseAndThink(int i) {
     });
 
     const float invCap = 1.f / std::max(0.01f, params.plantCapacity);
-    const float eyeW = p.fov / float(NUM_EYES);
     float waterDir = 0.f, waterBest = 0.f;
+    // Eye rays by rotation: no trig per eye (the first ray is the heading rotated by a per-genome constant).
+    float ca = c.ca * p.cOff - c.sa * p.sOff, sa = c.sa * p.cOff + c.ca * p.sOff;
     for (int e = 0; e < NUM_EYES; ++e) {
-        float a = c.angle - halfFov + (float(e) + 0.5f) * eyeW;
-        float ca = std::cos(a), sa = std::sin(a);
+        if (e) {
+            const float nc = ca * p.cStep - sa * p.sStep;
+            sa = sa * p.cStep + ca * p.sStep;
+            ca = nc;
+        }
         float plant = 0.f, obstacle = 0.f;
         for (int s = 0; s < 4; ++s) {
             float d = R * SAMPLE_D[s];
@@ -751,7 +766,7 @@ void World::senseAndThink(int i) {
     }
 
     const int cell = terrain.index(px, py);
-    const Vec2 dir = fromAngle(c.angle);
+    const Vec2 dir{c.ca, c.sa};
     const int mouthCell = terrain.index(px + dir.x * c.radius, py + dir.y * c.radius);
     in[IN_ENERGY] = c.energy / c.maxEnergy;
     in[IN_HEALTH] = c.health / c.maxHealth;
@@ -830,7 +845,7 @@ void World::interact() {
         c.flags &= ~(CF_EATING | CF_ATTACKING | CF_SHARING | CF_MATED | CF_HIT | CF_POISONED | CF_BLINK);
         const bool ghost = c.out[OUT_PHASE] > 0.3f; // phased: cannot eat or attack, cannot be attacked
         const Phenotype& p = c.ph;
-        const Vec2 dir = fromAngle(c.angle);
+        const Vec2 dir{c.ca, c.sa};
 
         // --- Eating ---------------------------------------------------------
         if (c.out[OUT_EAT] > 0.f && !ghost) {
@@ -1141,11 +1156,13 @@ void World::moveAndMetabolize(int i) {
     if (thrust < 0.f) thrust *= 0.4f;
     const float turn = c.out[OUT_TURN];
     c.angle = wrapAngle(c.angle + turn * p.turnRate);
+    c.ca = std::cos(c.angle);
+    c.sa = std::sin(c.angle);
     const int cell = terrain.index(c.pos.x, c.pos.y);
     const bool inWater = terrain.water[cell] != 0;
     if (inWater) c.flags |= CF_IN_WATER;
     else c.flags &= ~CF_IN_WATER;
-    const Vec2 dir = fromAngle(c.angle);
+    const Vec2 dir{c.ca, c.sa};
     // Blink (alien): a costly teleport along the heading, then a long cooldown. Never lands in water.
     if (c.blinkCd > 0) --c.blinkCd;
     if (c.out[OUT_BLINK] > 0.5f && c.blinkCd <= 0 && c.energy > 0.3f * c.maxEnergy) {
@@ -1359,10 +1376,17 @@ void World::updateEnvironment() {
     const float s = seasonSin();
     const float amp = 0.45f * params.seasonStrength;
     const float clim = climate();
-    const float rate = 0.005f * params.plantGrowth;
+    // The plant/pheromone grid is slow-moving and costs 65k cells per pass, so it advances every ENV_STRIDE ticks
+    // with every per-tick rate scaled to match (a 4-tick step of a 0.5%/tick process is well inside the error
+    // of the model itself).
+    constexpr int ENV_STRIDE = 4;
+    constexpr float DT = float(ENV_STRIDE);
+    const float rate = 0.005f * params.plantGrowth * DT;
     const float cap = params.plantCapacity;
-    const float decay = params.pheromoneDecay;
-    pool_->parallelFor(0, t.rows, 4, [&](int r0, int r1, int) {
+    const float decay = std::pow(params.pheromoneDecay, DT);
+    const float tillDecay = std::pow(0.9998f, DT), deadDecay = std::pow(0.995f, DT), frost = std::pow(0.9996f, DT);
+    const float overshoot = 0.002f * DT;
+    if (tickCount % ENV_STRIDE == 0) pool_->parallelFor(0, t.rows, 4, [&](int r0, int r1, int) {
         for (int row = r0; row < r1; ++row) {
             const float seasonal = -amp * t.latitude(row) * s + clim;
             float* plant = t.plant.data() + size_t(row) * t.cols;
@@ -1375,18 +1399,18 @@ void World::updateEnvironment() {
             for (int col = 0; col < t.cols; ++col) {
                 pher[col] = pher[col] > 1e-3f ? pher[col] * decay : 0.f;
                 const float till = tilled[col];
-                tilled[col] = till > 1e-3f ? till * 0.9998f : 0.f;
+                tilled[col] = till > 1e-3f ? till * tillDecay : 0.f;
                 const float K = fert[col] * cap * (1.f + 2.f * till);
                 float P = plant[col];
                 if (K <= 0.f) {
-                    plant[col] = P * 0.995f;
+                    plant[col] = P * deadDecay;
                     continue;
                 }
                 const float T = temp[col] + seasonal;
-                if (T < -0.45f) P *= 0.9996f; // frost die-back
+                if (T < -0.45f) P *= frost; // frost die-back
                 float tf = 1.f - sq((T - 0.25f) / 0.85f);
                 if (params.weather) tf *= 0.45f + 1.25f * rainAt((float(col) + 0.5f) * t.cellSize, (float(row) + 0.5f) * t.cellSize);
-                if (P > K) P -= (P - K) * 0.002f;
+                if (P > K) P -= (P - K) * overshoot;
                 else if (tf > 0.f) P += rate * (1.f + till) * (1.f - 0.45f * pdef[col]) * (1.f - 0.25f * pspr[col]) * tf * (P + 0.03f * K) * (1.f - P / K);
                 plant[col] = std::max(0.f, P);
             }

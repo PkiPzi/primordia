@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cstdint>
 #include <iosfwd>
 #include <string>
@@ -69,6 +70,7 @@ struct SimParams {
     bool sexualReproduction = true;
     // Population
     int maxPopulation = 12000;
+    int thinkEvery = 2;             // each brain runs every Nth tick (outputs persist in between): the big speed lever
     bool autoReseed = true;
     int reseedBelow = 30;
     int reseedCount = 200;
@@ -139,6 +141,7 @@ struct Creature {
     uint32_t id = 0, parentId = 0, speciesId = 0, generation = 0;
     Vec2 pos, vel;
     float angle = 0.f;
+    float ca = 1.f, sa = 0.f; // cos/sin of angle, refreshed whenever the angle changes (saves libm calls)
     float energy = 0.f, health = 0.f;
     float age = 0.f, growth = 1.f;
     float radius = 10.f, mass = 1.f, mass075 = 1.f, maxEnergy = 100.f, maxHealth = 50.f;
@@ -191,7 +194,7 @@ struct SpatialGrid {
     float cell = 64.f;
     int cols = 1, rows = 1;
     std::vector<int> start, idx, cellOf, fill;
-    std::vector<float> x, y, r, hue, signal, mass, angle, camo, callA, callB;
+    std::vector<float> x, y, r, hue, signal, mass, angle, cosA, sinA, camo, callA, callB;
     std::vector<float> hid; // N_HIDDEN floats per point, for the neural link
     void resize(float w, float h, float cellSize);
     // Counting sort of n points into cells; fills idx/x/y. Extra fields are filled by the caller.
@@ -227,11 +230,17 @@ struct SpatialGrid {
         int y0 = int((py - radius) / cell), y1 = int((py + radius) / cell);
         x0 = x0 < 0 ? 0 : x0; y0 = y0 < 0 ? 0 : y0;
         x1 = x1 >= cols ? cols - 1 : x1; y1 = y1 >= rows ? rows - 1 : y1;
-        for (int cy = y0; cy <= y1; ++cy)
+        const float r2 = radius * radius;
+        for (int cy = y0; cy <= y1; ++cy) {
+            const float ny = std::max(0.f, std::max(float(cy) * cell - py, py - float(cy + 1) * cell));
             for (int cx = x0; cx <= x1; ++cx) {
+                // Skip cells whose nearest point is outside the search circle (square -> circle: ~22% fewer cells).
+                const float nx = std::max(0.f, std::max(float(cx) * cell - px, px - float(cx + 1) * cell));
+                if (nx * nx + ny * ny > r2) continue;
                 int c = cy * cols + cx;
                 for (int k = start[c], e = start[c + 1]; k < e; ++k) f(k);
             }
+        }
     }
 };
 

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -22,6 +23,7 @@ Options parseOptions(int argc, char** argv) {
         else if (is("--seed")) o.seed = std::strtoull(next(), nullptr, 10);
         else if (is("--threads")) o.threads = std::atoi(next());
         else if (is("--population")) o.population = std::atoi(next());
+        else if (is("--think-every")) o.thinkEvery = std::atoi(next());
         else if (is("--size")) o.worldSize = float(std::atof(next()));
         else if (is("--load")) o.load = next();
         else if (is("--save")) o.save = next();
@@ -52,6 +54,7 @@ void printUsage() {
         "  --seed N            World seed (default: random)\n"
         "  --size N            World width/height in units (default 4096)\n"
         "  --population N      Initial population\n"
+        "  --think-every N     Each brain runs every Nth tick (1 = every tick, default 2; faster, slightly coarser)\n"
         "  --threads N         Simulation threads (default: all cores)\n"
         "  --load FILE         Load a saved world\n"
         "  --scenario N        Start from a built-in scenario (0-10, see the welcome screen)\n"
@@ -80,6 +83,7 @@ int runHeadless(const Options& opt) {
         ws.seed = opt.seed ? opt.seed : std::random_device{}();
         if (opt.worldSize > 0) ws.width = ws.height = opt.worldSize;
         if (opt.population > 0) ws.initialPopulation = opt.population;
+        if (opt.thinkEvery > 0) world.params.thinkEvery = std::clamp(opt.thinkEvery, 1, 8);
         world.create(ws);
         if (opt.scenario >= 0 && opt.scenario < scenarioCount()) {
             if (scenario(opt.scenario).post) scenario(opt.scenario).post(world);
@@ -98,7 +102,9 @@ int runHeadless(const Options& opt) {
     const int64_t end = world.tickCount + opt.ticks;
     const int64_t reportEvery = std::max<int64_t>(1000, opt.ticks / 20);
     size_t eventCursor = world.events.items.size();
+    double creatureTicks = 0; // work done: sum of population over all ticks, so speed is comparable between runs
     while (world.tickCount < end) {
+        creatureTicks += double(world.creatures.size());
         world.tick();
         if (world.tickCount % reportEvery == 0 || world.tickCount == end) {
             auto now = std::chrono::steady_clock::now();
@@ -139,6 +145,12 @@ int runHeadless(const Options& opt) {
                 (long long)opt.ticks, total, double(opt.ticks) / total, world.species.all().size(),
                 world.species.aliveCount(), (unsigned long long)world.stats.totalBirths,
                 (unsigned long long)world.stats.totalDeaths);
+    int discoveries = 0;
+    for (const WorldEvent& e : world.events.items) discoveries += e.kind == EventKind::Discovery;
+    std::printf("RESULT seed=%llu ticks=%lld secs=%.2f ticks_per_s=%.0f mcreature_ticks_per_s=%.3f pop=%zu species_alive=%d species_ever=%zu discoveries=%d\n",
+                (unsigned long long)world.settings.seed, (long long)opt.ticks, total, double(opt.ticks) / total,
+                creatureTicks / total / 1e6, world.creatures.size(), world.species.aliveCount(), world.species.all().size(),
+                discoveries);
     std::printf("Deaths by cause:");
     for (int k = 1; k < int(world.stats.causeTotals.size()); ++k)
         std::printf(" %s=%llu", deathCauseName(DeathCause(k)), (unsigned long long)world.stats.causeTotals[k]);

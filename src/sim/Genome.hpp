@@ -159,6 +159,7 @@ struct Phenotype {
     float upkeep;       // fixed per-tick cost (vision + brain), before global multipliers
     float learnRate;    // lifetime learning rate
     float linkStrength; // coupling to linked kin's hidden state
+    float cOff, sOff, cStep, sStep; // eye-ray rotations: first ray vs heading, and between neighbouring rays
     float detox;        // resistance to plant defences
     int connections;
 
