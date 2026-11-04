@@ -849,240 +849,331 @@ void World::kill(Creature& c, DeathCause cause) {
     c.cause = cause;
 }
 
-void World::interact() {
-    const int n = int(creatures.size());
-    order_.resize(n);
-    std::iota(order_.begin(), order_.end(), 0);
-    for (int i = n - 1; i > 0; --i) std::swap(order_[i], order_[rng_.below(i + 1)]);
-    for (Creature& c : creatures) c.hitsThisTick = 0;
+void World::interactOne(int i, TileCtx& tc) {
+    Creature& c = creatures[i];
+    if (!c.alive) return;
+    auto fxp = [&](FxEvent::Kind k, Vec2 p, Color col, float size) {
+        if (fxEnabled) tc.fx.push_back({k, p, col, size});
+    };
+    c.flags &= ~(CF_EATING | CF_ATTACKING | CF_SHARING | CF_MATED | CF_HIT | CF_POISONED | CF_BLINK);
+    const bool ghost = c.out[OUT_PHASE] > 0.3f; // phased: cannot eat or attack, cannot be attacked
+    const Phenotype& p = c.ph;
+    const Vec2 dir{c.ca, c.sa};
 
-    for (int oi = 0; oi < n; ++oi) {
-        const int i = order_[oi];
-        Creature& c = creatures[i];
-        if (!c.alive) continue;
-        c.flags &= ~(CF_EATING | CF_ATTACKING | CF_SHARING | CF_MATED | CF_HIT | CF_POISONED | CF_BLINK);
-        const bool ghost = c.out[OUT_PHASE] > 0.3f; // phased: cannot eat or attack, cannot be attacked
-        const Phenotype& p = c.ph;
-        const Vec2 dir{c.ca, c.sa};
-
-        // --- Eating ---------------------------------------------------------
-        if (c.out[OUT_EAT] > 0.f && !ghost) {
-            const float eager = 0.5f + 0.5f * c.out[OUT_EAT];
-            const Vec2 mouth = c.pos + dir * (c.radius * 0.8f);
-            if (p.plantEff > 0.01f) {
-                // Graze every cell under the mouth: big bodies sweep a wider swath of sparse grass.
-                const float reach = std::max(4.f, c.radius * 0.9f);
-                const float cs = terrain.cellSize;
-                int x0 = std::max(0, int((mouth.x - reach) / cs)), x1 = std::min(terrain.cols - 1, int((mouth.x + reach) / cs));
-                int y0 = std::max(0, int((mouth.y - reach) / cs)), y1 = std::min(terrain.rows - 1, int((mouth.y + reach) / cs));
-                float avail = 0.f;
+    // --- Eating ---------------------------------------------------------
+    if (c.out[OUT_EAT] > 0.f && !ghost) {
+        const float eager = 0.5f + 0.5f * c.out[OUT_EAT];
+        const Vec2 mouth = c.pos + dir * (c.radius * 0.8f);
+        if (p.plantEff > 0.01f) {
+            // Graze every cell under the mouth: big bodies sweep a wider swath of sparse grass.
+            const float reach = std::max(4.f, c.radius * 0.9f);
+            const float cs = terrain.cellSize;
+            int x0 = std::max(0, int((mouth.x - reach) / cs)), x1 = std::min(terrain.cols - 1, int((mouth.x + reach) / cs));
+            int y0 = std::max(0, int((mouth.y - reach) / cs)), y1 = std::min(terrain.rows - 1, int((mouth.y + reach) / cs));
+            float avail = 0.f;
+            for (int yy = y0; yy <= y1; ++yy)
+                for (int xx = x0; xx <= x1; ++xx) avail += terrain.plant[yy * terrain.cols + xx];
+            float bite = std::min(avail, 0.5f * std::pow(c.mass, 0.9f) * eager);
+            // Evolved plant chemistry: defended plants taste bad (smaller bites) and poison grazers
+            // that have not evolved detox.
+            const float pdef = terrain.plantDef[size_t(terrain.index(mouth.x, mouth.y))];
+            const float harm = pdef * (1.f - p.detox);
+            bite *= 1.f - 0.5f * harm;
+            // Hawk-dove food contest with whoever already grazed this patch this tick.
+            if (params.foodContests && bite > 0.f) {
+                const size_t cell = size_t(terrain.index(mouth.x, mouth.y));
+                if (cellEaterTick_[cell] == tickCount && cellEater_[cell] != i && cellEater_[cell] >= 0 &&
+                    cellEater_[cell] < int(creatures.size())) {
+                    Creature& rival = creatures[size_t(cellEater_[cell])];
+                    const bool meHawk = c.out[OUT_ATTACK] > 0.f, rivalHawk = rival.out[OUT_ATTACK] > 0.f;
+                    if (!meHawk && !rivalHawk) {          // doves share
+                        bite *= 0.5f;
+                        ++tc.contestDD;
+                    } else if (meHawk && !rivalHawk) {    // hawk intimidates dove and eats more
+                        bite = std::min(avail, bite * 1.5f);
+                        rival.energy = std::max(0.f, rival.energy - bite * 0.3f);
+                        ++tc.contestHD;
+                    } else if (!meHawk && rivalHawk) {    // dove backs off
+                        bite = 0.f;
+                        ++tc.contestHD;
+                    } else {                              // hawks fight: both pay
+                        const float cost = 0.06f * std::sqrt(c.mass * rival.mass);
+                        c.health -= c.maxHealth * cost;
+                        rival.health -= rival.maxHealth * cost;
+                        c.flags |= CF_HURT;
+                        rival.flags |= CF_HURT;
+                        bite *= 0.5f;
+                        ++tc.contestHH;
+                        if (c.health <= 0.f) kill(c, DeathCause::Predation);
+                        if (rival.health <= 0.f) kill(rival, DeathCause::Predation);
+                    }
+                }
+                cellEater_[cell] = i;
+                cellEaterTick_[cell] = tickCount;
+            }
+            if (bite > 0.f) {
+                const size_t gcell = size_t(terrain.index(mouth.x, mouth.y));
+                uint32_t tillerSp = 0;
+                uint8_t kind = 0;
+                if (terrain.tilled[gcell] > 0.2f) {
+                    tillerSp = terrain.tiller[gcell];
+                    kind = tillerSp == c.speciesId ? 1 : 2;
+                }
+                tc.bites.push_back({c.speciesId, tillerSp, kind});
+                const float take = bite / avail;
                 for (int yy = y0; yy <= y1; ++yy)
-                    for (int xx = x0; xx <= x1; ++xx) avail += terrain.plant[yy * terrain.cols + xx];
-                float bite = std::min(avail, 0.5f * std::pow(c.mass, 0.9f) * eager);
-                // Evolved plant chemistry: defended plants taste bad (smaller bites) and poison grazers
-                // that have not evolved detox.
-                const float pdef = terrain.plantDef[size_t(terrain.index(mouth.x, mouth.y))];
-                const float harm = pdef * (1.f - p.detox);
-                bite *= 1.f - 0.5f * harm;
-                // Hawk-dove food contest with whoever already grazed this patch this tick.
-                if (params.foodContests && bite > 0.f) {
-                    const size_t cell = size_t(terrain.index(mouth.x, mouth.y));
-                    if (cellEater_.size() != terrain.plant.size()) {
-                        cellEater_.assign(terrain.plant.size(), -1);
-                        cellEaterTick_.assign(terrain.plant.size(), -1);
-                    }
-                    if (cellEaterTick_[cell] == tickCount && cellEater_[cell] != i && cellEater_[cell] >= 0 &&
-                        cellEater_[cell] < int(creatures.size())) {
-                        Creature& rival = creatures[size_t(cellEater_[cell])];
-                        const bool meHawk = c.out[OUT_ATTACK] > 0.f, rivalHawk = rival.out[OUT_ATTACK] > 0.f;
-                        if (!meHawk && !rivalHawk) {          // doves share
-                            bite *= 0.5f;
-                            ++stats.contestDD;
-                        } else if (meHawk && !rivalHawk) {    // hawk intimidates dove and eats more
-                            bite = std::min(avail, bite * 1.5f);
-                            rival.energy = std::max(0.f, rival.energy - bite * 0.3f);
-                            ++stats.contestHD;
-                        } else if (!meHawk && rivalHawk) {    // dove backs off
-                            bite = 0.f;
-                            ++stats.contestHD;
-                        } else {                              // hawks fight: both pay
-                            const float cost = 0.06f * std::sqrt(c.mass * rival.mass);
-                            c.health -= c.maxHealth * cost;
-                            rival.health -= rival.maxHealth * cost;
-                            c.flags |= CF_HURT;
-                            rival.flags |= CF_HURT;
-                            bite *= 0.5f;
-                            ++stats.contestHH;
-                            if (c.health <= 0.f) kill(c, DeathCause::Predation);
-                            if (rival.health <= 0.f) kill(rival, DeathCause::Predation);
-                        }
-                    }
-                    cellEater_[cell] = i;
-                    cellEaterTick_[cell] = tickCount;
-                }
-                if (bite > 0.f) {
-                    const size_t gcell = size_t(terrain.index(mouth.x, mouth.y));
-                    BehaviorAcc& ba = behaviorOf(c.speciesId);
-                    ba.bites += 1.f;
-                    if (terrain.tilled[gcell] > 0.2f) {
-                        if (terrain.tiller[gcell] == c.speciesId) ba.bitesOwn += 1.f;
-                        else { ba.bitesOther += 1.f; ba.otherTiller = terrain.tiller[gcell]; }
-                    }
-                    const float take = bite / avail;
-                    for (int yy = y0; yy <= y1; ++yy)
-                        for (int xx = x0; xx <= x1; ++xx) terrain.plant[yy * terrain.cols + xx] *= 1.f - take;
-                    if (harm > 0.05f) {
-                        c.health -= bite * harm * 0.5f;
-                        c.pain = std::min(1.f, c.pain + harm * 0.1f);
-                        c.flags |= CF_POISONED;
-                        if (c.health <= 0.f) kill(c, DeathCause::Poison);
-                    }
-                    float gain = bite * params.plantEnergy * p.plantEff;
-                    c.energy += gain;
-                    c.hydration = std::min(1.f, c.hydration + bite * 0.025f); // juicy grass carries some water
-                    c.eatenPlant += gain;
-                    c.flags |= CF_EATING;
-                }
-            }
-            if (p.meatEff > 0.01f && !corpses.empty()) {
-                int best = -1;
-                float bestD = 0.f;
-                mgrid_.query(mouth.x, mouth.y, c.radius + 16.f, [&](int k) {
-                    int ci = mgrid_.idx[k];
-                    const Corpse& m = corpses[ci];
-                    if (m.energy <= 0.f) return;
-                    float d = (m.pos - mouth).length() - m.radius - c.radius * 0.5f;
-                    if (d < bestD) { bestD = d; best = ci; }
-                });
-                if (best >= 0) {
-                    Corpse& m = corpses[best];
-                    float bite = std::min(m.energy, (0.6f + 1.4f * p.weapon) * c.mass075 * eager);
-                    m.energy -= bite;
-                    float gain = bite * p.meatEff;
-                    c.energy += gain;
-                    c.eatenMeat += gain;
-                    c.flags |= CF_EATING;
-                    if (m.toxin > 0.05f) {
-                        c.health -= bite * m.toxin * 1.2f;
-                        c.pain = std::min(1.f, c.pain + 0.3f);
-                        c.flags |= CF_POISONED;
-                        if (c.health <= 0.f) kill(c, DeathCause::Poison);
-                    }
-                }
-            }
-            if (c.energy > c.maxEnergy) c.energy = c.maxEnergy;
-        }
-        if (!c.alive) continue;
-
-        // --- Attacking ------------------------------------------------------
-        if (c.out[OUT_ATTACK] > 0.f && !ghost) {
-            c.flags |= CF_ATTACKING;
-            c.energy -= 0.012f * c.mass * c.out[OUT_ATTACK] * params.metabolism;
-            int target = -1;
-            float bestGap = 1e9f;
-            cgrid_.query(c.pos.x, c.pos.y, c.radius + maxRadius_ + 4.f, [&](int k) {
-                int j = cgrid_.idx[k];
-                if (j == i) return;
-                const Creature& t = creatures[j];
-                if (!t.alive || t.out[OUT_PHASE] > 0.3f) return;
-                Vec2 d = t.pos - c.pos;
-                float gap = d.length() - c.radius - t.radius;
-                if (gap > 4.f) return;
-                float a = wrapAngle(fastAtan2(d.y, d.x) - c.angle);
-                if (std::fabs(a) > 0.8f) return;
-                if (gap < bestGap) { bestGap = gap; target = j; }
-            });
-            if (target >= 0) {
-                Creature& t = creatures[target];
-                float strength = 0.5f + 0.5f * c.out[OUT_ATTACK];
-                // Primer-style size rule: big attackers shred small targets, small ones barely scratch giants.
-                const float sizeEdge = clampf(std::sqrt(c.mass / t.mass), 0.25f, 3.f);
-                // Pack hunting: every extra attacker this tick adds 25%. Safety in numbers: crowded prey are
-                // harder to single out.
-                const float pack = 1.f + 0.25f * float(std::min<uint8_t>(t.hitsThisTick, 3));
-                const float herd = 1.f - 0.35f * t.in[IN_CROWD];
-                float dmg = p.damage * strength * sizeEdge * pack * herd * (1.f - 0.75f * t.ph.armor);
-                if (t.hitsThisTick > 0) ++stats.attacksPack;
-                if (t.hitsThisTick < 255) ++t.hitsThisTick;
-                t.health -= dmg;
-                t.pain = std::min(1.f, t.pain + dmg / t.maxHealth * 6.f + 0.1f);
-                t.flags |= CF_HURT;
-                t.lastAttacker = c.id;
-                float drain = std::min(t.energy, dmg * 1.0f);
-                t.energy -= drain;
-                c.energy = std::min(c.maxEnergy, c.energy + drain * p.meatEff);
-                c.flags |= CF_HIT;
-                if (t.speciesId == c.speciesId) ++stats.attacksIntra;
-                if (t.ph.toxin > 0.3f) ++stats.attacksToxic;
-                else ++stats.attacksInter;
-                if (t.ph.toxin > 0.05f) {
-                    c.health -= dmg * t.ph.toxin * 1.5f;
-                    c.pain = std::min(1.f, c.pain + 0.4f);
+                    for (int xx = x0; xx <= x1; ++xx) terrain.plant[yy * terrain.cols + xx] *= 1.f - take;
+                if (harm > 0.05f) {
+                    c.health -= bite * harm * 0.5f;
+                    c.pain = std::min(1.f, c.pain + harm * 0.1f);
                     c.flags |= CF_POISONED;
-                    if (rng_.chance(0.3f)) pushFx(FxEvent::Poison, c.pos, {0.7f, 1.f, 0.2f, 1.f}, c.radius);
+                    if (c.health <= 0.f) kill(c, DeathCause::Poison);
                 }
-                if (rng_.chance(0.25f)) pushFx(FxEvent::Hit, t.pos, {1.f, 0.25f, 0.2f, 1.f}, t.radius);
-                if (t.health <= 0.f && t.alive) {
-                    kill(t, DeathCause::Predation);
-                    ++c.kills;
-                }
-                if (c.health <= 0.f) kill(c, DeathCause::Poison);
+                float gain = bite * params.plantEnergy * p.plantEff;
+                c.energy += gain;
+                c.hydration = std::min(1.f, c.hydration + bite * 0.025f); // juicy grass carries some water
+                c.eatenPlant += gain;
+                c.flags |= CF_EATING;
             }
         }
-        if (!c.alive) continue;
-
-        // --- Sharing (altruism) ----------------------------------------------
-        if (c.out[OUT_SHARE] > 0.3f && c.energy > 0.3f * c.maxEnergy) {
-            int target = -1;
-            float lowest = c.energy / c.maxEnergy;
-            cgrid_.query(c.pos.x, c.pos.y, c.radius + maxRadius_ + 3.f, [&](int k) {
-                int j = cgrid_.idx[k];
-                if (j == i) return;
-                const Creature& t = creatures[j];
-                if (!t.alive) return;
-                if ((t.pos - c.pos).length() - c.radius - t.radius > 3.f) return;
-                float f = t.energy / t.maxEnergy;
-                if (f < lowest) { lowest = f; target = j; }
+        if (p.meatEff > 0.01f && !corpses.empty()) {
+            int best = -1;
+            float bestD = 0.f;
+            mgrid_.query(mouth.x, mouth.y, c.radius + 16.f, [&](int k) {
+                int ci = mgrid_.idx[k];
+                const Corpse& m = corpses[ci];
+                if (m.energy <= 0.f) return;
+                float d = (m.pos - mouth).length() - m.radius - c.radius * 0.5f;
+                if (d < bestD) { bestD = d; best = ci; }
             });
-            if (target >= 0) {
-                Creature& t = creatures[target];
-                float amount = std::min(0.8f, c.energy * 0.02f);
-                c.energy -= amount;
-                t.energy = std::min(t.maxEnergy, t.energy + amount * params.shareEfficiency);
-                c.flags |= CF_SHARING;
-                c.shared += amount;
-                if (rng_.chance(0.05f)) pushFx(FxEvent::Gift, t.pos, {1.f, 0.8f, 0.35f, 1.f}, t.radius);
+            if (best >= 0) {
+                Corpse& m = corpses[best];
+                float bite = std::min(m.energy, (0.6f + 1.4f * p.weapon) * c.mass075 * eager);
+                m.energy -= bite;
+                float gain = bite * p.meatEff;
+                c.energy += gain;
+                c.eatenMeat += gain;
+                c.flags |= CF_EATING;
+                if (m.toxin > 0.05f) {
+                    c.health -= bite * m.toxin * 1.2f;
+                    c.pain = std::min(1.f, c.pain + 0.3f);
+                    c.flags |= CF_POISONED;
+                    if (c.health <= 0.f) kill(c, DeathCause::Poison);
+                }
             }
         }
-
-        // --- Contagion --------------------------------------------------------
-        if (c.infection > 0.f) {
-            cgrid_.query(c.pos.x, c.pos.y, c.radius + maxRadius_ + 8.f, [&](int k) {
-                int j = cgrid_.idx[k];
-                if (j == i) return;
-                Creature& t = creatures[j];
-                if (!t.alive || t.infection > 0.f || t.immuneTicks > 0.f) return;
-                if ((t.pos - c.pos).length() - c.radius - t.radius > 8.f) return;
-                // Aggressive strains shed more (spread faster) but burn out sooner and hurt more.
-                float p = params.transmission * (0.4f + 1.2f * c.strain) * (1.f - 0.9f * t.ph.immunity) *
-                          (t.speciesId == c.speciesId ? 1.f : params.crossSpecies);
-                if (rng_.chance(p)) {
-                    t.strain = clamp01(c.strain + rng_.normal() * 0.04f);
-                    t.infection = float(params.diseaseDuration) * (1.3f - 0.6f * t.strain) * rng_.range(0.7f, 1.3f);
-                    t.flags |= CF_SICK;
-                }
-            });
-            if (rng_.chance(0.01f)) pushFx(FxEvent::Sick, c.pos, {0.65f, 0.95f, 0.35f, 0.8f}, c.radius);
-        }
-
-        // --- Reproduction ---------------------------------------------------
-        if (c.out[OUT_REPRODUCE] > 0.f && c.reproCooldown <= 0 && c.growth >= 1.f &&
-            c.energy > 0.55f * c.maxEnergy && int(creatures.size() + newborns_.size()) < params.maxPopulation)
-            reproduce(c);
+        if (c.energy > c.maxEnergy) c.energy = c.maxEnergy;
     }
+    if (!c.alive) return;
+
+    // --- Attacking ------------------------------------------------------
+    if (c.out[OUT_ATTACK] > 0.f && !ghost) {
+        c.flags |= CF_ATTACKING;
+        c.energy -= 0.012f * c.mass * c.out[OUT_ATTACK] * params.metabolism;
+        int target = -1;
+        float bestGap = 1e9f;
+        cgrid_.query(c.pos.x, c.pos.y, c.radius + maxRadius_ + 4.f, [&](int k) {
+            int j = cgrid_.idx[k];
+            if (j == i) return;
+            const Creature& t = creatures[j];
+            if (!t.alive || t.out[OUT_PHASE] > 0.3f) return;
+            Vec2 d = t.pos - c.pos;
+            float gap = d.length() - c.radius - t.radius;
+            if (gap > 4.f) return;
+            float a = wrapAngle(fastAtan2(d.y, d.x) - c.angle);
+            if (std::fabs(a) > 0.8f) return;
+            if (gap < bestGap) { bestGap = gap; target = j; }
+        });
+        if (target >= 0) {
+            Creature& t = creatures[target];
+            float strength = 0.5f + 0.5f * c.out[OUT_ATTACK];
+            // Primer-style size rule: big attackers shred small targets, small ones barely scratch giants.
+            const float sizeEdge = clampf(std::sqrt(c.mass / t.mass), 0.25f, 3.f);
+            // Pack hunting: every extra attacker this tick adds 25%. Safety in numbers: crowded prey are
+            // harder to single out.
+            const float pack = 1.f + 0.25f * float(std::min<uint8_t>(t.hitsThisTick, 3));
+            const float herd = 1.f - 0.35f * t.in[IN_CROWD];
+            float dmg = p.damage * strength * sizeEdge * pack * herd * (1.f - 0.75f * t.ph.armor);
+            if (t.hitsThisTick > 0) ++tc.attacksPack;
+            if (t.hitsThisTick < 255) ++t.hitsThisTick;
+            t.health -= dmg;
+            t.pain = std::min(1.f, t.pain + dmg / t.maxHealth * 6.f + 0.1f);
+            t.flags |= CF_HURT;
+            t.lastAttacker = c.id;
+            float drain = std::min(t.energy, dmg * 1.0f);
+            t.energy -= drain;
+            c.energy = std::min(c.maxEnergy, c.energy + drain * p.meatEff);
+            c.flags |= CF_HIT;
+            if (t.speciesId == c.speciesId) ++tc.attacksIntra;
+            if (t.ph.toxin > 0.3f) ++tc.attacksToxic;
+            else ++tc.attacksInter;
+            if (t.ph.toxin > 0.05f) {
+                c.health -= dmg * t.ph.toxin * 1.5f;
+                c.pain = std::min(1.f, c.pain + 0.4f);
+                c.flags |= CF_POISONED;
+                if (tc.rng.chance(0.3f)) fxp(FxEvent::Poison, c.pos, {0.7f, 1.f, 0.2f, 1.f}, c.radius);
+            }
+            if (tc.rng.chance(0.25f)) fxp(FxEvent::Hit, t.pos, {1.f, 0.25f, 0.2f, 1.f}, t.radius);
+            if (t.health <= 0.f && t.alive) {
+                kill(t, DeathCause::Predation);
+                ++c.kills;
+            }
+            if (c.health <= 0.f) kill(c, DeathCause::Poison);
+        }
+    }
+    if (!c.alive) return;
+
+    // --- Sharing (altruism) ----------------------------------------------
+    if (c.out[OUT_SHARE] > 0.3f && c.energy > 0.3f * c.maxEnergy) {
+        int target = -1;
+        float lowest = c.energy / c.maxEnergy;
+        cgrid_.query(c.pos.x, c.pos.y, c.radius + maxRadius_ + 3.f, [&](int k) {
+            int j = cgrid_.idx[k];
+            if (j == i) return;
+            const Creature& t = creatures[j];
+            if (!t.alive) return;
+            if ((t.pos - c.pos).length() - c.radius - t.radius > 3.f) return;
+            float f = t.energy / t.maxEnergy;
+            if (f < lowest) { lowest = f; target = j; }
+        });
+        if (target >= 0) {
+            Creature& t = creatures[target];
+            float amount = std::min(0.8f, c.energy * 0.02f);
+            c.energy -= amount;
+            t.energy = std::min(t.maxEnergy, t.energy + amount * params.shareEfficiency);
+            c.flags |= CF_SHARING;
+            c.shared += amount;
+            if (tc.rng.chance(0.05f)) fxp(FxEvent::Gift, t.pos, {1.f, 0.8f, 0.35f, 1.f}, t.radius);
+        }
+    }
+
+    // --- Contagion --------------------------------------------------------
+    if (c.infection > 0.f) {
+        cgrid_.query(c.pos.x, c.pos.y, c.radius + maxRadius_ + 8.f, [&](int k) {
+            int j = cgrid_.idx[k];
+            if (j == i) return;
+            Creature& t = creatures[j];
+            if (!t.alive || t.infection > 0.f || t.immuneTicks > 0.f) return;
+            if ((t.pos - c.pos).length() - c.radius - t.radius > 8.f) return;
+            // Aggressive strains shed more (spread faster) but burn out sooner and hurt more.
+            float p = params.transmission * (0.4f + 1.2f * c.strain) * (1.f - 0.9f * t.ph.immunity) *
+                      (t.speciesId == c.speciesId ? 1.f : params.crossSpecies);
+            if (tc.rng.chance(p)) {
+                t.strain = clamp01(c.strain + tc.rng.normal() * 0.04f);
+                t.infection = float(params.diseaseDuration) * (1.3f - 0.6f * t.strain) * tc.rng.range(0.7f, 1.3f);
+                t.flags |= CF_SICK;
+            }
+        });
+        if (tc.rng.chance(0.01f)) fxp(FxEvent::Sick, c.pos, {0.65f, 0.95f, 0.35f, 0.8f}, c.radius);
+    }
+
+    // --- Reproduction ---------------------------------------------------
+    if (c.out[OUT_REPRODUCE] > 0.f && c.reproCooldown <= 0 && c.growth >= 1.f &&
+        c.energy > 0.55f * c.maxEnergy && int(creatures.size()) + pendingBirths_.load(std::memory_order_relaxed) < params.maxPopulation)
+        reproduce(c, tc);
+
 }
 
-void World::reproduce(Creature& c) {
+// The interaction step runs in parallel over map tiles. Tiles of the same colour (a 2x2 checkerboard) are at least
+// one tile apart, which exceeds every interaction reach (mate search, bites, contagion), so they never touch the same
+// creature or grass cell. Everything shared (RNG, stats, effects, births, species) goes through a per-tile context
+// and is merged serially in tile order, so a run does not depend on the thread count.
+void World::interact() {
+    const int n = int(creatures.size());
+    for (Creature& c : creatures) c.hitsThisTick = 0;
+    if (cellEater_.size() != terrain.plant.size()) {
+        cellEater_.assign(terrain.plant.size(), -1);
+        cellEaterTick_.assign(terrain.plant.size(), -1);
+    }
+    constexpr float TS = 256.f;
+    const int tx = std::max(1, int(std::ceil(terrain.width / TS))), ty = std::max(1, int(std::ceil(terrain.height / TS)));
+    const int nt = tx * ty;
+    tileStart_.assign(size_t(nt) + 1, 0);
+    tileIdx_.resize(size_t(n));
+    std::vector<int>& tileOf = order_;
+    tileOf.resize(size_t(n));
+    for (int i = 0; i < n; ++i) {
+        const int cx = std::clamp(int(creatures[i].pos.x / TS), 0, tx - 1), cy = std::clamp(int(creatures[i].pos.y / TS), 0, ty - 1);
+        tileOf[size_t(i)] = cy * tx + cx;
+        ++tileStart_[size_t(tileOf[size_t(i)]) + 1];
+    }
+    for (int t = 0; t < nt; ++t) tileStart_[size_t(t) + 1] += tileStart_[size_t(t)];
+    {
+        std::vector<int> fill(tileStart_.begin(), tileStart_.end() - 1);
+        for (int i = 0; i < n; ++i) tileIdx_[size_t(fill[size_t(tileOf[size_t(i)])]++)] = i;
+    }
+    if (int(tiles_.size()) != nt) tiles_.resize(size_t(nt));
+    for (int t = 0; t < nt; ++t) tiles_[size_t(t)].reset(uint64_t(tickCount) * 0x9E3779B97F4A7C15ull + uint64_t(t) + 1);
+    pendingBirths_.store(0, std::memory_order_relaxed);
+
+    std::vector<int> batch;
+    for (int ph = 0; ph < 4; ++ph) { // rotate the colour order so no region always goes first
+        const int colour = int((uint64_t(ph) + uint64_t(tickCount)) & 3u);
+        batch.clear();
+        for (int y = 0; y < ty; ++y)
+            for (int x = 0; x < tx; ++x)
+                if (((x & 1) | ((y & 1) << 1)) == colour && tileStart_[size_t(y * tx + x) + 1] > tileStart_[size_t(y * tx + x)])
+                    batch.push_back(y * tx + x);
+        pool_->parallelFor(0, int(batch.size()), 1, [&](int b0, int b1, int) {
+            for (int bi = b0; bi < b1; ++bi) {
+                const int t = batch[size_t(bi)];
+                TileCtx& tc = tiles_[size_t(t)];
+                int* first = tileIdx_.data() + tileStart_[size_t(t)];
+                const int cnt = tileStart_[size_t(t) + 1] - tileStart_[size_t(t)];
+                for (int k = cnt - 1; k > 0; --k) std::swap(first[k], first[tc.rng.below(k + 1)]);
+                for (int k = 0; k < cnt; ++k) interactOne(first[k], tc);
+            }
+        });
+    }
+    for (int t = 0; t < nt; ++t) commitTile(tiles_[size_t(t)]);
+}
+
+void World::commitTile(TileCtx& tc) {
+    stats.contestDD += tc.contestDD; stats.contestHD += tc.contestHD; stats.contestHH += tc.contestHH;
+    stats.attacksPack += tc.attacksPack; stats.attacksIntra += tc.attacksIntra;
+    stats.attacksToxic += tc.attacksToxic; stats.attacksInter += tc.attacksInter;
+    for (const FxEvent& e : tc.fx)
+        if (fx.size() <= 4096) fx.push_back(e);
+    for (const TileCtx::Bite& b : tc.bites) {
+        BehaviorAcc& ba = behaviorOf(b.species);
+        ba.bites += 1.f;
+        if (b.kind == 1) ba.bitesOwn += 1.f;
+        else if (b.kind == 2) { ba.bitesOther += 1.f; ba.otherTiller = b.tiller; }
+    }
+    for (TileCtx::Birth& b : tc.births) {
+        const Creature& parent = creatures[size_t(b.parent)];
+        bool created = false;
+        uint32_t sid = species.assign(b.g, b.parentSpecies, tickCount, nextId_, created);
+        Creature child = makeCreature(b.g, b.pos, sid, parent.id, b.gen, b.energy, 0.f);
+        std::copy(b.geneDelta, b.geneDelta + G_COUNT, child.geneDelta);
+        child.synapsesChanged = b.changed;
+        child.sexual = b.sexual;
+        // Parental teaching: a plastic child starts with a fraction of what its mother has learned.
+        if (child.ph.learnRate > 1e-4f)
+            for (int li = 0; li < N_LEARN; ++li) child.learn[li] = parent.learn[li] * 0.4f;
+        species.onBirth(sid);
+        if (created) {
+            const Species& s = species.get(sid);
+            std::string from = species.valid(s.parentId) ? species.get(s.parentId).name() : "unknown";
+            log(EventKind::Speciation, sid, b.pos, "New species " + s.name() + " branches from " + from);
+            pushFx(FxEvent::Speciation, b.pos, s.color, 40.f);
+        }
+        newborns_.push_back(std::move(child));
+        maxGeneration = std::max(maxGeneration, b.gen);
+    }
+    for (const TileCtx::Hybrid& h : tc.hybrids) {
+        ++stats.totalHybrids;
+        const uint64_t pair = (uint64_t(std::min(h.a, h.b)) << 32) | std::max(h.a, h.b);
+        if (pair != lastHybridPair_) {
+            lastHybridPair_ = pair;
+            log(EventKind::Info, h.a, h.pos, "Hybrid born: " + species.get(h.a).name() + " x " + species.get(h.b).name());
+        }
+    }
+    stats.birthsAcc += tc.litters;
+    stats.totalBirths += uint64_t(tc.litters);
+}
+
+void World::reproduce(Creature& c, TileCtx& tc) {
     const Phenotype& p = c.ph;
     Creature* mate = nullptr;
     if (params.sexualReproduction && c.rng.chance(p.sexuality)) {
@@ -1117,53 +1208,36 @@ void World::reproduce(Creature& c) {
     c.energy -= total * 1.08f;
     c.reproCooldown = int(150.f + p.maturity * 0.25f);
     const uint32_t gen = std::max(c.generation, mate ? mate->generation : 0u) + 1;
-    const Vec2 back = fromAngle(c.angle) * -(c.radius + 2.f);
+    const Vec2 back = Vec2{c.ca, c.sa} * -(c.radius + 2.f);
+    pendingBirths_.fetch_add(litter, std::memory_order_relaxed);
     for (int k = 0; k < litter; ++k) {
-        Genome g = mate ? crossover(c.genome, mate->genome, c.rng) : c.genome;
-        mutate(g, c.rng, params.mutationRate);
-        Vec2 pos = c.pos + back + Vec2(c.rng.range(-5.f, 5.f), c.rng.range(-5.f, 5.f));
-        pos.x = clampf(pos.x, 5.f, terrain.width - 5.f);
-        pos.y = clampf(pos.y, 5.f, terrain.height - 5.f);
-        bool created = false;
-        uint32_t sid = species.assign(g, c.speciesId, tickCount, nextId_, created);
-        Creature child = makeCreature(g, pos, sid, c.id, gen, each, 0.f);
+        TileCtx::Birth b;
+        b.g = mate ? crossover(c.genome, mate->genome, c.rng) : c.genome;
+        mutate(b.g, c.rng, params.mutationRate);
+        b.pos = c.pos + back + Vec2(c.rng.range(-5.f, 5.f), c.rng.range(-5.f, 5.f));
+        b.pos.x = clampf(b.pos.x, 5.f, terrain.width - 5.f);
+        b.pos.y = clampf(b.pos.y, 5.f, terrain.height - 5.f);
         // Record what changed relative to the parent (mutation, plus the mate's genes if sexual).
         int changed = 0;
-        for (int k = 0; k < BRAIN_SIZE; ++k) changed += g.w[k] != c.genome.w[k];
-        for (int gi = 0; gi < G_COUNT; ++gi) child.geneDelta[gi] = g.g[gi] - c.genome.g[gi];
-        child.synapsesChanged = uint16_t(std::min(changed, 65535));
-        child.sexual = mate != nullptr;
-        // Parental teaching: a plastic child starts with a fraction of what its mother has learned.
-        if (child.ph.learnRate > 1e-4f)
-            for (int li = 0; li < N_LEARN; ++li) child.learn[li] = c.learn[li] * 0.4f;
-        species.onBirth(sid);
-        if (created) {
-            const Species& s = species.get(sid);
-            std::string from = species.valid(s.parentId) ? species.get(s.parentId).name() : "unknown";
-            log(EventKind::Speciation, sid, pos, "New species " + s.name() + " branches from " + from);
-            pushFx(FxEvent::Speciation, pos, s.color, 40.f);
-        }
-        newborns_.push_back(child);
-        maxGeneration = std::max(maxGeneration, gen);
+        for (int w = 0; w < BRAIN_SIZE; ++w) changed += b.g.w[w] != c.genome.w[w];
+        for (int gi = 0; gi < G_COUNT; ++gi) b.geneDelta[gi] = b.g.g[gi] - c.genome.g[gi];
+        b.changed = uint16_t(std::min(changed, 65535));
+        b.sexual = mate != nullptr;
+        b.parent = int(&c - creatures.data());
+        b.parentSpecies = c.speciesId;
+        b.gen = gen;
+        b.energy = each;
+        tc.births.push_back(std::move(b));
     }
     c.children += uint32_t(litter);
-    if (mate && mate->speciesId != c.speciesId) {
-        ++stats.totalHybrids;
-        const uint64_t pair = (uint64_t(std::min(c.speciesId, mate->speciesId)) << 32) | std::max(c.speciesId, mate->speciesId);
-        if (pair != lastHybridPair_) {
-            lastHybridPair_ = pair;
-            log(EventKind::Info, c.speciesId, c.pos,
-                "Hybrid born: " + species.get(c.speciesId).name() + " x " + species.get(mate->speciesId).name());
-        }
-    }
+    if (mate && mate->speciesId != c.speciesId) tc.hybrids.push_back({c.speciesId, mate->speciesId, c.pos});
     if (mate) {
         c.flags |= CF_MATED;
         mate->flags |= CF_MATED;
-        pushFx(FxEvent::Love, (c.pos + mate->pos) * 0.5f, {1.f, 0.45f, 0.65f, 1.f}, c.radius);
+        if (fxEnabled) tc.fx.push_back({FxEvent::Love, (c.pos + mate->pos) * 0.5f, {1.f, 0.45f, 0.65f, 1.f}, c.radius});
     }
-    stats.birthsAcc += litter;
-    stats.totalBirths += uint64_t(litter);
-    pushFx(FxEvent::Birth, c.pos, hsv(c.genome.g[G_HUE], 0.5f, 1.f), c.radius);
+    tc.litters += litter;
+    if (fxEnabled) tc.fx.push_back({FxEvent::Birth, c.pos, hsv(c.genome.g[G_HUE], 0.5f, 1.f), c.radius});
 }
 
 void World::moveAndMetabolize(int i) {

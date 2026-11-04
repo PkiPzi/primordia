@@ -1,5 +1,6 @@
 #pragma once
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <iosfwd>
 #include <string>
@@ -295,6 +296,34 @@ struct SpeciesSkills {
     int best[3] = {-1, -1, -1};    // standout skills, strongest first
 };
 
+// Everything one tile of the interaction step may not write to the world directly (see World::interact).
+struct TileCtx {
+    struct Bite { uint32_t species, tiller; uint8_t kind; }; // kind: 0 plain soil, 1 own species' tended soil, 2 another's
+    struct Birth {
+        Genome g;
+        Vec2 pos;
+        int parent = 0;
+        uint32_t parentSpecies = 0, gen = 0;
+        float energy = 0.f;
+        float geneDelta[G_COUNT]{};
+        uint16_t changed = 0;
+        bool sexual = false;
+    };
+    struct Hybrid { uint32_t a, b; Vec2 pos; };
+    Rng rng;
+    int contestDD = 0, contestHD = 0, contestHH = 0, attacksIntra = 0, attacksInter = 0, attacksToxic = 0, attacksPack = 0;
+    int litters = 0;
+    std::vector<FxEvent> fx;
+    std::vector<Bite> bites;
+    std::vector<Birth> births;
+    std::vector<Hybrid> hybrids;
+    void reset(uint64_t seed) {
+        rng = Rng(seed, 0x7411);
+        contestDD = contestHD = contestHH = attacksIntra = attacksInter = attacksToxic = attacksPack = litters = 0;
+        fx.clear(); bites.clear(); births.clear(); hybrids.clear();
+    }
+};
+
 struct TickTimings {
     double grid = 0, sense = 0, interact = 0, move = 0, env = 0, book = 0, total = 0;
 };
@@ -383,6 +412,8 @@ private:
     void buildGrids();
     void senseAndThink(int i);
     void interact();
+    void interactOne(int i, TileCtx& tc);
+    void commitTile(TileCtx& tc);
     void moveAndMetabolize(int i);
     void resolveDeathsAndBirths();
     void updateEnvironment();
@@ -391,7 +422,7 @@ private:
     void updateBody(Creature& c) const;
     Creature makeCreature(const Genome& g, Vec2 pos, uint32_t speciesId, uint32_t parentId, uint32_t generation,
                           float energy, float growth);
-    void reproduce(Creature& c);
+    void reproduce(Creature& c, TileCtx& tc);
     void kill(Creature& c, DeathCause cause);
     Vec2 randomLand(Rng& r, float minFertility) const;
     void log(EventKind kind, uint32_t speciesId, Vec2 pos, std::string text);
@@ -413,6 +444,9 @@ private:
     SpatialGrid cgrid_, mgrid_; // creatures, meat
     std::vector<Creature> newborns_;
     std::vector<int> order_;
+    std::vector<int> tileStart_, tileIdx_;
+    std::vector<TileCtx> tiles_;
+    std::atomic<int> pendingBirths_{0};
     std::vector<int> cellEater_;     // last creature index to graze each cell this tick
     std::vector<int64_t> cellEaterTick_;
     float maxRadius_ = 18.f;
