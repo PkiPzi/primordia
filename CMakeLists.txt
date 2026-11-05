@@ -60,3 +60,9 @@ endif()
 # Ship fonts next to the binary so the app runs from the build directory.
 add_custom_command(TARGET primordia POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:primordia>/assets)
+
+# GPU feasibility benchmark (not part of the default build): cmake --build build --target gpu_bench
+add_executable(gpu_bench EXCLUDE_FROM_ALL tools/gpu_bench.cpp)
+target_link_libraries(gpu_bench PRIVATE SDL3::SDL3 PkgConfig::EPOXY)
+target_compile_options(gpu_bench PRIVATE -O3 -march=native -fopenmp)
+target_link_options(gpu_bench PRIVATE -fopenmp)
