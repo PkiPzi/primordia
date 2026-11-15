@@ -1147,6 +1147,15 @@ void Ui::drawInspector(AppState& app) {
             ImGui::PopID();
         }
     }
+    for (int k = 0, shown = 0; k < N_ORGANS; ++k) {
+        const Organ& o = c.ph.organ[k];
+        if (!o.on) continue;
+        if (!shown++) {
+            ImGui::Spacing();
+            sectionLabel("ORGANS (not designed: evolved from parts)");
+        }
+        ImGui::TextWrapped("Power %.2f, in use %.0f%% of the time: %s", o.power, 100.f * std::min(1.f, c.organUse[k]), organText(o).c_str());
+    }
     if (c.parentId) {
         // What changed at birth: the biggest differences from the parent's genome.
         ImGui::Spacing();
@@ -2113,6 +2122,9 @@ void Ui::drawSpecies(AppState& app) {
         d += ".";
         ImGui::PushTextWrapPos(ImGui::GetContentRegionMax().x);
         ImGui::TextUnformatted(d.c_str());
+        for (const OrganTally& t : w.organTallies())
+            if (t.species == hs.id && t.count * 3 >= hs.population)
+                ImGui::TextWrapped("Organ (%d of %d carry it): %s", t.count, hs.population, organText(t.organ).c_str());
         if (hs.alive()) {
             ImGui::PushStyleColor(ImGuiCol_Text, C_GREEN);
             ImGui::TextWrapped(ICON_STAR " Best at: %s", w.bestAtText(hs.id).c_str());
@@ -2727,6 +2739,8 @@ void Ui::drawEnvironment(AppState& app) {
         help("Genetic distance at which a lineage counts as a new species");
         ImGui::SliderFloat("Diet trade-off", &p.specialization, 0.5f, 3.f, "%.2f");
         help("Above 1, generalists digest both plants and meat badly. Higher values push lineages to specialise.");
+        ImGui::SliderFloat("Generalist tax", &p.generalistTax, 0.f, 3.f, "%.2f");
+        help("Upkeep for investing in several costly traits at once (wings, quills, armour, poison, organs...). Above 0, a body pays for everything except its strongest trait, so species are forced to pick one trade.");
         ImGui::Checkbox("Sexual reproduction", &p.sexualReproduction);
         ImGui::Checkbox("Hybridization", &p.hybridization);
         help("Close sister species occasionally interbreed when they meet, creating hybrid zones");

@@ -91,6 +91,7 @@ struct SimParams {
     float crossSpecies = 0.2f;      // transmission multiplier between species
     float toxinCost = 1.0f;         // upkeep multiplier for poison glands
     float shareEfficiency = 0.85f;  // fraction of shared energy that arrives
+    float generalistTax = 0.f;      // upkeep for investing in several costly traits at once (0 = off): forces specialists
 };
 
 // ---------------------------------------------------------------------------
@@ -164,6 +165,7 @@ struct Creature {
     float strain = 0.5f;     // aggressiveness of the pathogen strain it carries (evolves on transmission)
     float immuneTicks = 0.f; // ticks of acquired immunity remaining
     float shared = 0.f;      // energy given away over its life
+    float organUse[N_ORGANS]{}; // how often each organ has actually delivered something lately (0..1)
     float camo = 0.f;        // how well it blends into the ground right now (0..0.6)
     float geneDelta[G_COUNT]{}; // genome difference from its (first) parent at birth
     uint16_t synapsesChanged = 0;
@@ -328,6 +330,14 @@ struct TileCtx {
     }
 };
 
+// One organ design at work in one species (see World::organTallies).
+struct OrganTally {
+    uint32_t species = 0;
+    Organ organ;      // an example (carriers share source and sink; the trigger may differ)
+    int count = 0;    // living carriers
+    float use = 0.f;  // summed Creature::organUse of the carriers
+};
+
 // A founding lineage and everything descended from it (see World::lineageScores).
 struct LineageScore {
     uint32_t root = 0;        // founding species
@@ -420,6 +430,7 @@ public:
         return speciesId >= 1 && speciesId <= skills.size() && skills[speciesId - 1].valid ? &skills[speciesId - 1] : nullptr;
     }
     std::vector<LineageScore> lineageScores() const;  // every founding lineage, most populous first
+    std::vector<OrganTally> organTallies() const;     // every working organ design per species, most carriers first
     std::string bestAtText(uint32_t speciesId) const; // e.g. "Hunting, Speed, Brainpower" or "no standout skill"
 
 private:
@@ -427,6 +438,7 @@ private:
     void senseAndThink(int i);
     void interact();
     void interactOne(int i, TileCtx& tc);
+    void runOrgans(int i, TileCtx& tc);
     void commitTile(TileCtx& tc);
     void moveAndMetabolize(int i);
     void resolveDeathsAndBirths();

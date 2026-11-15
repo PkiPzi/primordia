@@ -1,5 +1,6 @@
 #include "sim/Genome.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cctype>
@@ -69,6 +70,7 @@ struct NameInit {
     }
 } g_nameInit;
 
+float sq(float v) { return v * v; }
 float mutationRateOf(const Genome& g) { return 0.002f * std::pow(100.f, g.g[G_MUT_RATE]); }
 float mutationScaleOf(const Genome& g) { return lerp(0.05f, 0.6f, g.g[G_MUT_SCALE]); }
 
@@ -111,6 +113,8 @@ Genome Genome::random(Rng& rng, float dietMax) {
     g[G_WINGS] = rng.range(0.f, 0.08f);  // ...and so do the air, quills and green skin
     g[G_SPIKES] = rng.range(0.f, 0.08f);
     g[G_PHOTO] = rng.range(0.f, 0.08f);
+    // Organs start switched off, each lineage with its own random latent designs.
+    for (int k = 0; k < N_ORGANS * OG_COUNT; ++k) gn.o[size_t(k)] = k % OG_COUNT == OG_POWER ? 0.f : rng.uniform();
 
     // Sparse random wiring; behaviours with real costs (attack, share, pheromone)
     // start disconnected and must be discovered by structural mutation.
@@ -323,7 +327,10 @@ bool genomeFromText(const std::string& textIn, Genome& out) {
         if (!std::isfinite(x)) return false;
     for (float& x : g.w)
         if (!std::isfinite(x)) return false;
+    for (float& x : g.o)
+        if (!std::isfinite(x)) return false;
     for (float& x : g.g) x = clamp01(x);
+    for (float& x : g.o) x = clamp01(x);
     out = g;
     return true;
 }
@@ -340,6 +347,15 @@ void mutate(Genome& gn, Rng& rng, float rateMultiplier) {
         if (i == G_HUE || i == G_MATE_PREF) v -= std::floor(v);
         else v = clamp01(v);
         gn.g[i] = v;
+    }
+
+    // Organs: strength and trigger level drift; what an organ senses, takes and makes changes rarely and all at once.
+    for (int k = 0; k < N_ORGANS * OG_COUNT; ++k) {
+        if (!rng.chance(bodyP)) continue;
+        const int f = k % OG_COUNT;
+        float& v = gn.o[size_t(k)];
+        if (f == OG_POWER || f == OG_GATE) v = clamp01(v + rng.normal() * scale * 0.3f);
+        else if (rng.chance(0.15f)) v = rng.uniform();
     }
 
     for (int k = 0; k < BRAIN_SIZE; ++k) {
@@ -369,6 +385,10 @@ void mutate(Genome& gn, Rng& rng, float rateMultiplier) {
 Genome crossover(const Genome& a, const Genome& b, Rng& rng) {
     Genome c;
     for (int i = 0; i < G_COUNT; ++i) c.g[i] = rng.chance(0.5f) ? a.g[i] : b.g[i];
+    for (int s = 0; s < N_ORGANS; ++s) { // whole organs
+        const Genome& src = rng.chance(0.5f) ? a : b;
+        for (int f = 0; f < OG_COUNT; ++f) c.o[size_t(s * OG_COUNT + f)] = src.o[size_t(s * OG_COUNT + f)];
+    }
     // Inherit whole neurons (incoming weights + bias) so functional units stay intact.
     for (int h = 0; h < N_HIDDEN; ++h) {
         const Genome& src = rng.chance(0.5f) ? a : b;
@@ -391,6 +411,10 @@ float bodyDistance(const Genome& a, const Genome& b) {
         float d = (i == G_HUE || i == G_MATE_PREF) ? hueDistance(a.g[i], b.g[i]) * 2.f : (a.g[i] - b.g[i]);
         s += GENE_INFO[i].distanceWeight * d * d;
     }
+    for (int k = 0; k < N_ORGANS; ++k) {
+        const Organ x = organOf(a, k), y = organOf(b, k);
+        s += 0.8f * sq(x.power - y.power) + (x.on && y.on && x.kind() != y.kind() ? 0.3f : 0.f);
+    }
     return std::sqrt(s);
 }
 
@@ -400,6 +424,61 @@ float geneticDistance(const Genome& a, const Genome& b) {
     for (int k = 0; k < BRAIN_SIZE; ++k) brain += std::fabs(a.w[k] - b.w[k]);
     brain /= float(BRAIN_SIZE);
     return bodyDistance(a, b) + brain * 1.5f;
+}
+
+Organ organOf(const Genome& gn, int slot) {
+    const float* v = gn.o.data() + slot * OG_COUNT;
+    auto pick = [](float x, int n) { return uint8_t(std::min(n - 1, int(x * float(n)))); };
+    Organ o;
+    o.power = v[OG_POWER];
+    o.sense = pick(v[OG_SENSE], N_INPUTS);
+    o.above = v[OG_GATE] >= 0.5f;
+    o.level = o.above ? (v[OG_GATE] - 0.5f) * 2.f : v[OG_GATE] * 2.f;
+    o.source = pick(v[OG_SOURCE], SR_COUNT);
+    o.sink = pick(v[OG_SINK], SK_COUNT);
+    o.who = pick(v[OG_WHO], 3);
+    o.on = o.power > 0.15f && !(o.source == o.sink && o.source <= SR_PLANTS); // sources 0..6 line up with sinks 0..6
+    return o;
+}
+
+std::string organText(const Organ& o) {
+    static const char* const src[SR_COUNT] = {"its own energy", "its own health", "its own water", "neighbours' energy",
+                                              "neighbours' health", "neighbours' water", "the plants underfoot", "nearby carrion"};
+    static const char* const snk[SK_COUNT] = {"its own energy", "its own health", "its own water", "energy for neighbours",
+                                              "health for neighbours", "water for neighbours", "plant growth", "tended soil",
+                                              "a shove that pushes neighbours away", "a pull that drags neighbours in",
+                                              "a grip that holds neighbours still", "a burst of speed", "a scent trail",
+                                              "a disease it gives to neighbours", "nothing (it just destroys it)"};
+    char b[256];
+    std::snprintf(b, sizeof b, "turns %s into %s when %s is %s %.1f%s", src[o.source], snk[o.sink], inputName(o.sense),
+                  o.above ? "above" : "below", o.level,
+                  !o.social() ? "" : o.who == 1 ? " (other species only)" : o.who == 2 ? " (own species only)" : "");
+    return b;
+}
+
+namespace {
+// The costly things a body can put itself into, in specialtyName() order.
+void specialtyLevels(const Genome& gn, float out[N_SPECIALTIES]) {
+    const auto& g = gn.g;
+    float organs = 0.f;
+    for (int k = 0; k < N_ORGANS; ++k) organs = std::max(organs, gn.o[size_t(k * OG_COUNT + OG_POWER)]);
+    const float v[N_SPECIALTIES] = {g[G_WINGS], g[G_SPIKES], g[G_PHOTO], g[G_AQUATIC], g[G_ARMOR], g[G_TOXIN],
+                                    std::min(g[G_WEAPON], g[G_DIET]) * 1.25f, organs, std::max(g[G_PLASTICITY], g[G_LINK])};
+    std::copy(v, v + N_SPECIALTIES, out);
+}
+} // namespace
+
+const char* specialtyName(int s) {
+    static const char* const n[N_SPECIALTIES] = {"fliers", "quilled", "sun-fed", "swimmers", "armoured", "poisonous",
+                                                 "hunters", "inventors", "thinkers"};
+    return s >= 0 && s < N_SPECIALTIES ? n[s] : "generalists";
+}
+
+int specialtyOf(const Genome& gn) {
+    float v[N_SPECIALTIES];
+    specialtyLevels(gn, v);
+    const int best = int(std::max_element(v, v + N_SPECIALTIES) - v);
+    return v[best] > 0.5f ? best : -1;
 }
 
 Phenotype Phenotype::from(const Genome& gn, float specialization) {
@@ -453,6 +532,16 @@ Phenotype Phenotype::from(const Genome& gn, float specialization) {
     p.accel *= (1.f + 0.25f * p.carn) * (1.f + 0.25f * p.lift) * (1.f - 0.1f * p.spikes) * (1.f - 0.4f * p.photo * p.photo);
     p.plantEff *= 1.f - 0.3f * p.photo * p.photo;
     p.meatEff *= 1.f - p.photo;
+    for (int k = 0; k < N_ORGANS; ++k) {
+        p.organ[k] = organOf(gn, k);
+        if (p.organ[k].on) p.organUpkeep += 0.004f * sq(p.organ[k].power);
+    }
+    {
+        float v[N_SPECIALTIES], sum = 0.f, top = 0.f;
+        specialtyLevels(gn, v);
+        for (float x : v) { sum += x; top = std::max(top, x); }
+        p.spread = sum - top;
+    }
     p.learnRate = 0.05f * g[G_PLASTICITY] * g[G_PLASTICITY] * 4.f; // quadratic: low plasticity is nearly free
     return p;
 }

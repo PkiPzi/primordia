@@ -20,7 +20,7 @@ Command-line options (`./run.sh --help`):
 
 | Option | Meaning |
 | --- | --- |
-| `--scenario N` | start from a scenario (0-12, in welcome-screen order) |
+| `--scenario N` | start from a scenario (0-13, in welcome-screen order) |
 | `--seed N` | world seed |
 | `--size N` | world width/height in units (default 4096) |
 | `--population N` | initial creatures |
@@ -88,6 +88,15 @@ Mutation adds and prunes synapses, so brain complexity itself evolves against an
 - *Overclock.* Extra brain steps per tick for extra energy: subjective time speeds up.
 - *Phase shift.* An intangible mode: cannot be bitten, cannot eat or attack, drains energy.
 
+**Organs nobody designed.** Every genome has three organ slots. An organ moves something from a source (its own
+energy, health or water, a neighbour's, the plants underfoot, carrion) to a sink (the same list, plus plant growth,
+tended soil, a shove, a pull, a grip, a burst of speed, a scent trail, a disease, or nothing at all) whenever one of
+the creature's 55 senses is above or below a level. Half of what is taken arrives and running an organ costs energy,
+so nothing is free. Founders carry random designs switched off; mutation switches them on and reshapes them. What an
+organ is for is whatever the combination does: leeches that sprint on stolen health, grazers that destroy carrion,
+healers, gardeners. The Inspector and the species card describe each organ in plain words, the journal reports an
+organ once most of a species carries and uses it, and `--headless` lists the organs at work.
+
 **Evolving plants.** Every map cell's plants carry a chemical-defence and a seed-dispersal trait. Seedlings from
 lush neighbours take over grazed cells with mutation, defence slows growth, and herbivores can evolve a detox gene,
 so a plant-herbivore arms race can unfold. Overlay and journal entries report it.
@@ -143,7 +152,7 @@ species. **Export journal** writes it as Markdown to `~/Documents/Primordia/`. `
 ## Scenarios
 
 Primordial Soup, Natural Selection 101, Predator & Prey, Warning Colours, Epidemic, Island Hopping, Ice Age,
-Kin & Altruism, Cambrian Explosion, Single Origin, Desert Pangaea, Water World, and Menagerie (founders that already fly, bristle, sunbathe and swim). Pick one on the welcome screen or under World > Scenarios.
+Kin & Altruism, Cambrian Explosion, Single Origin, Desert Pangaea, Water World, Menagerie (founders that already fly, bristle, sunbathe and swim), and Guilds (nine island lineages with one trade each, two of them inventors with random working organs, under a generalist tax: Settings > Evolution > Generalist tax makes a body pay for every costly trait except its strongest). Pick one on the welcome screen or under World > Scenarios.
 Each scenario has a goal with a progress bar in its notes box (for example "Have 6 species alive at once" or "Keep
 hunters and grazers together until year 8"). Some goals can fail; rewind a year and try something different.
 Goals you have met are ticked on the welcome screen and counted under World > Scenarios. View > World report is a

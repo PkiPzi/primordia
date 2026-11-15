@@ -61,7 +61,7 @@ void printUsage() {
         "  --think-every N     Each brain runs every Nth tick (1 = every tick, default 2; faster, slightly coarser)\n"
         "  --threads N         Simulation threads (default: all cores)\n"
         "  --load FILE         Load a saved world\n"
-        "  --scenario N        Start from a built-in scenario (0-12, see the welcome screen)\n"
+        "  --scenario N        Start from a built-in scenario (0-13, see the welcome screen)\n"
         "  --headless          Run without a window and print statistics\n"
         "  --ticks N           Ticks to run in headless mode (default 20000)\n"
         "  --save FILE         Save the world when the headless run ends\n"
@@ -246,6 +246,18 @@ int runHeadless(const Options& opt) {
         for (const Species& sp : world.species.all())
             if (sp.alive() && sp.population >= 15)
                 std::printf("  %-28s %4d alive  best at: %s\n", sp.name().c_str(), sp.population, world.bestAtText(sp.id).c_str());
+        {
+            int guild[N_SPECIALTIES + 1] = {};
+            for (const Creature& c : world.creatures) ++guild[specialtyOf(c.genome) + 1];
+            std::printf("GUILDS");
+            for (int k = 0; k <= N_SPECIALTIES; ++k) std::printf(" %s=%d", specialtyName(k - 1), guild[k]);
+            std::printf("\nOrgans at work (species, carriers, share of time in use):\n");
+            int shown = 0;
+            for (const OrganTally& t : world.organTallies())
+                if (t.count >= 5 && shown++ < 12)
+                    std::printf("  %-28s %4d  %3.0f%%  %s\n", world.species.get(t.species).name().c_str(), t.count,
+                                100.f * t.use / float(t.count), organText(t.organ).c_str());
+        }
         std::printf("Discoveries:\n");
         for (const WorldEvent& e : world.events.items)
             if (e.kind == EventKind::Discovery)

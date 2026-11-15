@@ -1083,6 +1083,9 @@ void World::interactOne(int i, TileCtx& tc) {
         }
     }
 
+    if (!ghost && (p.organ[0].on || p.organ[1].on || p.organ[2].on)) runOrgans(i, tc);
+    if (!c.alive) return;
+
     // --- Contagion --------------------------------------------------------
     if (c.infection > 0.f) {
         cgrid_.query(c.pos.x, c.pos.y, c.radius + maxRadius_ + 8.f, [&](int k) {
@@ -1108,6 +1111,163 @@ void World::interactOne(int i, TileCtx& tc) {
         c.energy > 0.55f * c.maxEnergy && int(creatures.size()) + pendingBirths_.load(std::memory_order_relaxed) < params.maxPopulation)
         reproduce(c, tc);
 
+}
+
+// Organs (see Genome.hpp): each working organ whose sense has crossed its level takes up to a budget from its source
+// and delivers half of it to its sink. Everything is counted in energy: 1 health = 1 energy, a full drink = a quarter
+// of the drinker's energy store. Nothing is created, so an organ only pays if the combination happens to be useful.
+void World::runOrgans(int i, TileCtx& tc) {
+    static_assert(N_ORGANS == 3, "interactOne tests three organ slots");
+    Creature& c = creatures[i];
+    constexpr int MAXN = 8;
+    int near[MAXN];
+    int nNear = -1; // neighbours are looked up once, and only if an organ needs them
+    const size_t cell = size_t(terrain.index(c.pos.x, c.pos.y));
+    for (int s = 0; s < N_ORGANS && c.alive; ++s) {
+        const Organ& o = c.ph.organ[s];
+        if (!o.on) continue;
+        c.organUse[s] *= 0.998f;
+        const float x = c.in[o.sense];
+        if (o.above ? x <= o.level : x >= o.level) continue;
+        int nb[MAXN];
+        int n = 0;
+        if (o.social()) {
+            if (nNear < 0) {
+                nNear = 0;
+                const float reach = 30.f; // the widest any organ reaches: far inside a tile (see interact)
+                cgrid_.query(c.pos.x, c.pos.y, c.radius + maxRadius_ + reach, [&](int k) {
+                    const int j = cgrid_.idx[k];
+                    if (j == i || nNear >= MAXN) return;
+                    const Creature& t = creatures[j];
+                    if (t.alive && t.out[OUT_PHASE] <= 0.3f && (t.pos - c.pos).length() - c.radius - t.radius < reach) near[nNear++] = j;
+                });
+            }
+            const float reach = 6.f + 24.f * o.power;
+            for (int k = 0; k < nNear; ++k) {
+                const Creature& t = creatures[near[k]];
+                if (!t.alive || (o.who == 1 && t.speciesId == c.speciesId) || (o.who == 2 && t.speciesId != c.speciesId)) continue;
+                if ((t.pos - c.pos).length() - c.radius - t.radius < reach) nb[n++] = near[k];
+            }
+            if (!n) continue;
+        }
+        const float want = 0.12f * c.mass075 * o.power;
+        const float share = n ? want / float(n) : 0.f;
+        float got = 0.f;
+        switch (o.source) {
+            case SR_ENERGY: got = std::min(want, std::max(0.f, c.energy - 0.25f * c.maxEnergy)); c.energy -= got; break;
+            case SR_HEALTH: got = std::min(want, std::max(0.f, c.health - 0.3f * c.maxHealth)); c.health -= got; break;
+            case SR_WATER: {
+                const float unit = 0.25f * c.maxEnergy;
+                got = std::min(want, unit * std::max(0.f, c.hydration - 0.3f));
+                c.hydration -= got / unit;
+                break;
+            }
+            case SR_N_ENERGY:
+                for (int k = 0; k < n; ++k) {
+                    Creature& t = creatures[nb[k]];
+                    const float g = std::min(share, t.energy);
+                    t.energy -= g;
+                    got += g;
+                }
+                break;
+            case SR_N_HEALTH:
+                for (int k = 0; k < n; ++k) {
+                    Creature& t = creatures[nb[k]];
+                    const float g = std::min(share, t.health);
+                    t.health -= g + 1e-4f;
+                    t.pain = std::min(1.f, t.pain + 0.05f);
+                    t.flags |= CF_HURT;
+                    t.lastAttacker = c.id;
+                    got += g;
+                    if (t.health <= 0.f) {
+                        kill(t, DeathCause::Predation);
+                        ++c.kills;
+                    }
+                }
+                break;
+            case SR_N_WATER:
+                for (int k = 0; k < n; ++k) {
+                    Creature& t = creatures[nb[k]];
+                    const float unit = 0.25f * t.maxEnergy, g = std::min(share, unit * t.hydration);
+                    t.hydration -= g / unit;
+                    got += g;
+                }
+                break;
+            case SR_PLANTS:
+                got = std::min(want, terrain.plant[cell] * params.plantEnergy);
+                terrain.plant[cell] -= got / std::max(0.01f, params.plantEnergy);
+                break;
+            case SR_CARRION: {
+                int best = -1;
+                float bestD = 1e9f;
+                mgrid_.query(c.pos.x, c.pos.y, c.radius + 16.f, [&](int k) {
+                    const Corpse& m = corpses[size_t(mgrid_.idx[k])];
+                    const float d = (m.pos - c.pos).length();
+                    if (m.energy > 0.f && d < bestD) { bestD = d; best = mgrid_.idx[k]; }
+                });
+                if (best >= 0) {
+                    got = std::min(want, corpses[size_t(best)].energy);
+                    corpses[size_t(best)].energy -= got;
+                }
+                break;
+            }
+            default: break;
+        }
+        if (got <= 0.f) continue;
+        if (o.source != SR_ENERGY) c.energy -= 0.2f * got; // running the organ is work
+        c.organUse[s] += 0.002f;
+        const float out = 0.5f * got, each = n ? out / float(n) : 0.f;
+        switch (o.sink) {
+            case SK_ENERGY: c.energy = std::min(c.maxEnergy, c.energy + out); break;
+            case SK_HEALTH: c.health = std::min(c.maxHealth, c.health + out); break;
+            case SK_WATER: c.hydration = std::min(1.f, c.hydration + out / (0.25f * c.maxEnergy)); break;
+            case SK_N_ENERGY:
+                for (int k = 0; k < n; ++k) creatures[nb[k]].energy = std::min(creatures[nb[k]].maxEnergy, creatures[nb[k]].energy + each);
+                break;
+            case SK_N_HEALTH:
+                for (int k = 0; k < n; ++k) creatures[nb[k]].health = std::min(creatures[nb[k]].maxHealth, creatures[nb[k]].health + each);
+                break;
+            case SK_N_WATER:
+                for (int k = 0; k < n; ++k)
+                    creatures[nb[k]].hydration = std::min(1.f, creatures[nb[k]].hydration + each / (0.25f * creatures[nb[k]].maxEnergy));
+                break;
+            case SK_PLANTS: terrain.plant[cell] = std::min(params.plantCapacity, terrain.plant[cell] + out / std::max(0.01f, params.plantEnergy)); break;
+            case SK_SOIL:
+                terrain.tilled[cell] = std::min(1.f, terrain.tilled[cell] + 0.3f * out);
+                terrain.tiller[cell] = c.speciesId;
+                break;
+            case SK_PUSH:
+            case SK_PULL:
+                for (int k = 0; k < n; ++k) {
+                    Creature& t = creatures[nb[k]];
+                    const Vec2 d = t.pos - c.pos;
+                    const float len = std::max(1.f, d.length());
+                    t.vel += d * ((o.sink == SK_PUSH ? 1.f : -1.f) * std::min(1.5f, 10.f * each / t.mass) / len);
+                }
+                break;
+            case SK_GRIP:
+                for (int k = 0; k < n; ++k) creatures[nb[k]].vel *= 1.f - std::min(0.9f, 8.f * each / creatures[nb[k]].mass);
+                break;
+            case SK_JET: c.vel += Vec2{c.ca, c.sa} * std::min(1.5f, 10.f * out / c.mass); break;
+            case SK_SCENT: terrain.pheromone[cell] = std::min(4.f, terrain.pheromone[cell] + 2.f * out); break;
+            case SK_PLAGUE:
+                for (int k = 0; k < n; ++k) {
+                    Creature& t = creatures[nb[k]];
+                    if (t.infection > 0.f || t.immuneTicks > 0.f || !tc.rng.chance(0.02f * each * (1.f - 0.9f * t.ph.immunity))) continue;
+                    t.strain = 0.5f;
+                    t.infection = float(params.diseaseDuration) * tc.rng.range(0.7f, 1.3f);
+                    t.flags |= CF_SICK;
+                }
+                break;
+            default: break; // SK_VOID: gone
+        }
+        if (n && tc.rng.chance(0.04f) && fxEnabled) {
+            const bool harm = o.source >= SR_N_ENERGY && o.source <= SR_N_WATER;
+            const Creature& t = creatures[nb[0]];
+            tc.fx.push_back({harm ? FxEvent::Hit : o.sink == SK_PLAGUE ? FxEvent::Sick : FxEvent::Gift, t.pos,
+                             harm ? Color{0.8f, 0.3f, 1.f, 1.f} : Color{0.4f, 0.9f, 1.f, 1.f}, t.radius});
+        }
+    }
 }
 
 // The interaction step runs in parallel over map tiles. Tiles of the same colour (a 2x2 checkerboard) are at least
@@ -1356,7 +1516,8 @@ void World::moveAndMetabolize(int i) {
                         (c.out[OUT_OVERCLOCK] > 0.5f ? 0.004f * c.mass075 + 0.00003f * float(p.connections) : 0.f) +
                         (phased ? 0.006f * c.mass075 : 0.f);
     const float immuneCost = 0.004f * c.mass075 * p.immunity + 0.003f * c.mass075 * p.nightVision +
-                             c.mass075 * (0.006f * p.wings + 0.002f * p.spikes);
+                             c.mass075 * (0.006f * p.wings + 0.002f * p.spikes + p.organUpkeep +
+                                          params.generalistTax * 0.012f * sq(p.spread));
     // Photosynthesis: a steady income by day, enough for a fully green body standing still in the open to live on.
     // Moving and neighbours' shade cut it, and murky water takes a third.
     if (p.photo > 0.02f)

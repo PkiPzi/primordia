@@ -4,6 +4,7 @@
 #include <cmath>
 #include <array>
 #include <cstdio>
+#include <unordered_map>
 
 #include "sim/World.hpp"
 
@@ -32,6 +33,7 @@ enum Tag : uint8_t {
     T_FLIER = 98,
     T_QUILLS = 99,
     T_SUNBATHER = 100,
+    T_ORGAN = 110,     // + organ kind (source * SK_COUNT + sink): 110..229
 };
 
 const char* const CTX_WHEN[BehaviorAcc::CTX] = {"when hurt", "when a bigger creature is near", "while eating",
@@ -103,6 +105,22 @@ void World::discover(uint8_t tag, uint32_t speciesId, Vec2 pos, std::string text
     }
     announced_.insert(key);
     events.push({tickCount, EventKind::Discovery, speciesId, pos, std::move(text), tag});
+}
+
+std::vector<OrganTally> World::organTallies() const {
+    std::vector<OrganTally> v;
+    std::unordered_map<uint64_t, size_t> at; // species << 16 | kind
+    for (const Creature& c : creatures)
+        for (int s = 0; s < N_ORGANS; ++s) {
+            const Organ& o = c.ph.organ[s];
+            if (!o.on) continue;
+            const auto [it, fresh] = at.try_emplace(uint64_t(c.speciesId) << 16 | uint64_t(o.kind()), v.size());
+            if (fresh) v.push_back({c.speciesId, o, 0, 0.f});
+            ++v[it->second].count;
+            v[it->second].use += c.organUse[s];
+        }
+    std::stable_sort(v.begin(), v.end(), [](const OrganTally& a, const OrganTally& b) { return a.count > b.count; });
+    return v;
 }
 
 void World::scanBehaviours() {
@@ -204,6 +222,15 @@ void World::scanBehaviours() {
 
     // 2. Look for behaviours that clearly stand out. Not in the first half year: founders are random genomes.
     if (tickCount < params.yearLength / 2) return;
+    // Organs: most of a species carries the same design, and it is really being used.
+    static_assert(T_ORGAN + int(SR_COUNT) * int(SK_COUNT) <= 256);
+    for (const OrganTally& t : organTallies()) {
+        if (!species.valid(t.species)) continue;
+        const Species& sp = species.get(t.species);
+        if (sp.alive() && sp.population >= 20 && float(t.count) >= 0.6f * float(sp.population) && t.use >= 0.02f * float(t.count))
+            discover(uint8_t(T_ORGAN + t.organ.kind()), t.species, sp.centroid,
+                     name(t.species) + " grew an organ nobody designed: it " + organText(t.organ));
+    }
     for (size_t s = 0; s < behav_.size(); ++s) {
         BehaviorAcc& a = behav_[s];
         const Species& sp = species.all()[s];

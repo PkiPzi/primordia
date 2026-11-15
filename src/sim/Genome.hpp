@@ -121,9 +121,34 @@ const char* inputName(int i);   // e.g. "Eye3 Meat"
 const char* outputName(int o);
 const char* eyeChannelName(int c);
 
+// ---------------------------------------------------------------------------
+// Organs: body parts nobody designed. Each of a genome's organ slots moves something from a source to a sink
+// whenever one of the creature's senses crosses a level. The parts are plumbing (energy, health, water, plants,
+// forces); what an organ is *for* is whatever the combination turns out to do. Founders carry random, switched-off
+// designs (power 0), so every lineage has different latent organs waiting for a mutation to switch them on.
+// ---------------------------------------------------------------------------
+constexpr int N_ORGANS = 3;
+enum OrganGene : int { OG_POWER, OG_SENSE, OG_GATE, OG_SOURCE, OG_SINK, OG_WHO, OG_COUNT };
+enum OrganSource : int { SR_ENERGY, SR_HEALTH, SR_WATER, SR_N_ENERGY, SR_N_HEALTH, SR_N_WATER, SR_PLANTS, SR_CARRION, SR_COUNT };
+enum OrganSink : int { SK_ENERGY, SK_HEALTH, SK_WATER, SK_N_ENERGY, SK_N_HEALTH, SK_N_WATER, SK_PLANTS, SK_SOIL,
+                       SK_PUSH, SK_PULL, SK_GRIP, SK_JET, SK_SCENT, SK_PLAGUE, SK_VOID, SK_COUNT };
+struct Organ {
+    float power = 0.f;   // 0..1
+    float level = 0.f;   // fires when the sense is above (or below) this
+    uint8_t sense = 0;   // an Input
+    uint8_t source = 0, sink = 0;
+    uint8_t who = 0;     // neighbours it acts on: 0 anyone, 1 other species only, 2 own species only
+    bool above = true;
+    bool on = false;     // strong enough to work, and not a pointless loop (source == sink)
+    bool social() const { return (source >= SR_N_ENERGY && source <= SR_N_WATER) || (sink >= SK_N_ENERGY && sink <= SK_N_WATER) ||
+                                 (sink >= SK_PUSH && sink <= SK_GRIP) || sink == SK_PLAGUE; }
+    int kind() const { return int(source) * int(SK_COUNT) + int(sink); }
+};
+
 struct Genome {
     std::array<float, G_COUNT> g{};
     std::array<float, BRAIN_SIZE> w{};
+    std::array<float, N_ORGANS * OG_COUNT> o{};
 
     static Genome random(Rng& rng, float dietMax = 1.f);
     static Genome predator(Rng& rng); // carnivore founder with hunting instincts
@@ -134,6 +159,14 @@ enum class Instinct : int { Graze, Hunt, Flee, Herd, Drink, FollowScent, CryOut,
 const char* instinctName(Instinct i);
 const char* instinctDescription(Instinct i);
 void addInstinct(Genome& g, Instinct i); // wires a hand-made behaviour into the brain
+
+Organ organOf(const Genome& g, int slot);
+std::string organText(const Organ& o); // e.g. "turns neighbours' health into a burst of speed when Pain is above 0.4"
+
+// What a body has put most into (for the Guilds scenario and reports): -1 = nothing in particular.
+constexpr int N_SPECIALTIES = 9;
+const char* specialtyName(int s);
+int specialtyOf(const Genome& g);
 
 std::string genomeToText(const Genome& g);                 // portable text (for the clipboard)
 bool genomeFromText(const std::string& text, Genome& out);
@@ -174,6 +207,9 @@ struct Phenotype {
     float spikes;
     float carn; // 0..1: how far the body is a specialist hunter's       // quills that hurt attackers
     float photo;        // photosynthetic skin
+    Organ organ[N_ORGANS];
+    float organUpkeep;  // standing cost of the working organs (per unit of mass^0.75)
+    float spread;       // how much is invested in costly traits beyond the strongest one (the generalist tax)
     int connections;
 
     static Phenotype from(const Genome& g, float specialization);

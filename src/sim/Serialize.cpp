@@ -13,7 +13,7 @@ namespace pm {
 namespace {
 
 constexpr char MAGIC[8] = {'P', 'R', 'I', 'M', 'O', 'R', 'D', 'I'};
-constexpr uint32_t FORMAT_VERSION = 22;
+constexpr uint32_t FORMAT_VERSION = 23;
 
 static_assert(std::is_trivially_copyable_v<Creature>);
 static_assert(std::is_trivially_copyable_v<Corpse>);

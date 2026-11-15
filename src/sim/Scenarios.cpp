@@ -69,6 +69,48 @@ void makeMenagerie(World& w) {
         }
 }
 
+// Eight lineages, each already committed to one thing; the ninth (the predator lineage) hunts. Two are "inventors":
+// their random latent organs are switched on, so nobody knows in advance what they do.
+void makeGuilds(World& w) {
+    static const int plan[6] = {G_WINGS, G_SPIKES, G_PHOTO, G_AQUATIC, G_ARMOR, G_TOXIN};
+    static const int costly[] = {G_WINGS, G_SPIKES, G_PHOTO, G_AQUATIC, G_ARMOR, G_TOXIN, G_PLASTICITY, G_LINK};
+    Rng rng(w.settings.seed + 91);
+    float design[9][2 * OG_COUNT] = {};
+    for (auto& d : design)
+        for (int k = 0; k < 2; ++k) {
+            Genome t;
+            Organ o;
+            do { // any working design, except one that only burns its owner
+                for (int f = 0; f < OG_COUNT; ++f) t.o[size_t(f)] = rng.uniform();
+                t.o[OG_POWER] = k ? 0.45f : 0.7f;
+                o = organOf(t, 0);
+            } while (!o.on || (o.sink == SK_VOID && o.source <= SR_WATER));
+            std::copy(t.o.begin(), t.o.begin() + OG_COUNT, d + k * OG_COUNT);
+        }
+    auto edit = [&](Genome& g, uint32_t sid) {
+        if (sid < 1 || sid > 9) return;
+        for (int c : costly) g.g[size_t(c)] *= 0.3f;
+        if (sid <= 6) {
+            g.g[size_t(plan[sid - 1])] = 0.8f;
+            if (sid <= 3) g.g[G_SIZE] = std::min(g.g[G_SIZE], 0.3f); // small bodies fly and sunbathe best
+            if (sid == 6) { g.g[G_HUE] = 0.13f; g.g[G_PATTERN] = 0.5f; } // wasp yellow
+        } else if (sid <= 8) {
+            std::copy(design[sid], design[sid] + 2 * OG_COUNT, g.o.begin());
+        } else {
+            g.g[G_WEAPON] = 0.7f;
+            g.g[G_DIET] = 0.9f;
+        }
+        if (sid != 9) g.g[G_WEAPON] *= 0.3f;
+    };
+    for (Species& s : w.species.all()) edit(s.rep, s.id);
+    for (Creature& c : w.creatures) {
+        edit(c.genome, c.speciesId);
+        c.ph = Phenotype::from(c.genome, w.params.specialization);
+        for (int tries = 0; c.speciesId == 4 && tries < 400 && !w.terrain.water[size_t(w.terrain.index(c.pos.x, c.pos.y))]; ++tries)
+            c.pos = {rng.range(20.f, w.terrain.width - 20.f), rng.range(20.f, w.terrain.height - 20.f)};
+    }
+}
+
 // Every founder starts half-way to the water: clumsy waders that can already nibble algae.
 void makeWaders(World& w) {
     for (Species& s : w.species.all()) s.rep.g[G_AQUATIC] = 0.35f;
@@ -256,6 +298,25 @@ const Scenario SCENARIOS[] = {
      },
      makeMenagerie,
      "Zoom in: wings, quills, leaves and fins are drawn on the body. Traits > Evolution shows each gene rising or fading."},
+    {"Guilds", ICON_STAR, "One trade each",
+     "Nine lineages, each committed to one thing: fliers, quilled, sun-fed, swimmers, armoured, poisonous, hunters and two "
+     "inventors whose organs nobody designed. A generalist tax makes a body that invests in several costly traits pay "
+     "heavily for all but its strongest, so every species has to pick a trade or change trades.",
+     [](WorldSettings& ws, SimParams& p) {
+         ws = WorldSettings{};
+         ws.foundingLineages = 8;
+         ws.predatorLineages = 1;
+         ws.predatorShare = 0.1f;
+         ws.initialPopulation = 1350;
+         ws.preset = TerrainPreset::Archipelago; // each guild starts on its own islands
+         ws.waterFraction = 0.5f;
+         p.generalistTax = 1.f;
+         p.specialization = 2.2f;
+         p.epidemics = false;
+     },
+     makeGuilds,
+     "Select a creature: the Inspector lists its organs in plain words. Events > Discoveries reports each organ a species "
+     "settles on. Settings > Evolution > Generalist tax sets how hard the squeeze is."},
 };
 
 // --- Objectives -------------------------------------------------------------
@@ -358,6 +419,14 @@ const Objective OBJECTIVES[] = {
              for (int k = 0; k < 4; ++k) n[k] += c.genome.g[size_t(plan[k])] > 0.5f;
          for (int k = 0; k < 4; ++k) kept += n[k] >= 20;
          return lastUntil(w, 5.f, kept >= 2);
+     }},
+    {"Keep the guilds: at year 5, at least four different trades each still number 20 or more creatures",
+     [](const World& w) {
+         int n[N_SPECIALTIES] = {}, kept = 0;
+         for (const Creature& c : w.creatures)
+             if (const int s = specialtyOf(c.genome); s >= 0) ++n[s];
+         for (int v : n) kept += v >= 20;
+         return lastUntil(w, 5.f, kept >= 4);
      }},
 };
 static_assert(sizeof(OBJECTIVES) / sizeof(OBJECTIVES[0]) == sizeof(SCENARIOS) / sizeof(SCENARIOS[0]),
