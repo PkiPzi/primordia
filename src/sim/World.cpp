@@ -243,7 +243,9 @@ void Terrain::refreshCell(int i) {
     float h = std::max(0.f, (e - sl) / std::max(1e-3f, 1.f - sl));
     baseTemp[i] = climateBase[i] - 0.65f * std::pow(h, 1.4f);
     if (water[i]) {
-        fertility[i] = 0.f;
+        // Algae: the sunlit shelf near the coast is rich, the open ocean a thin soup.
+        const float depth = clamp01((seaLevel - e) / std::max(seaLevel, 0.05f) * 2.5f);
+        fertility[i] = 0.1f + 0.4f * (1.f - depth);
         return;
     }
     float f = clamp01(moisture[i] * 1.25f - 0.12f);
@@ -365,6 +367,7 @@ void World::create(const WorldSettings& ws) {
     recentExtinctions_.clear();
     behav_.clear();
     announced_.clear();
+    streaks_.clear();
     prevGenes_.clear();
     lastGeneYear_ = -1;
     recentPeak_ = 0.f;
@@ -762,6 +765,7 @@ void World::senseAndThink(int i) {
             ca = nc;
         }
         float plant = 0.f, obstacle = 0.f;
+        bool sawWater = false;
         for (int s = 0; s < 4; ++s) {
             float d = R * SAMPLE_D[s];
             float sx = px + ca * d, sy = py + sa * d;
@@ -770,13 +774,18 @@ void World::senseAndThink(int i) {
                 continue;
             }
             int idx = terrain.index(sx, sy);
-            if (terrain.water[idx] && obstacle == 0.f) {
-                obstacle = 1.f - SAMPLE_D[s];
-                if (obstacle > waterBest) {
-                    waterBest = obstacle;
+            // The element a body is not built for reads as the obstacle: water to a land animal, the shore to a
+            // sea animal, a bit of both to an amphibian.
+            const bool wet = terrain.water[idx] != 0;
+            if (wet && !sawWater) {
+                sawWater = true;
+                if (1.f - SAMPLE_D[s] > waterBest) {
+                    waterBest = 1.f - SAMPLE_D[s];
                     waterDir = (float(e) - float(NUM_EYES - 1) * 0.5f) / (float(NUM_EYES - 1) * 0.5f);
                 }
             }
+            const float block = wet ? (1.f - p.aquatic) * (1.f - p.lift) : p.aquatic;
+            if (obstacle == 0.f && block > 0.3f) obstacle = (1.f - SAMPLE_D[s]) * block;
             plant += SAMPLE_W[s] * terrain.plant[idx] * invCap;
         }
         in[e * EC_COUNT + EC_PLANT] = std::min(plant, 1.f);
@@ -879,6 +888,8 @@ void World::interactOne(int i, TileCtx& tc) {
             const float pdef = terrain.plantDef[size_t(terrain.index(mouth.x, mouth.y))];
             const float harm = pdef * (1.f - p.detox);
             bite *= 1.f - 0.5f * harm;
+            // Algae needs a body built for water, grass one built for land.
+            bite *= terrain.water[size_t(terrain.index(mouth.x, mouth.y))] ? 0.2f + 0.8f * p.aquatic : 1.f - 0.6f * p.aquatic;
             // Hawk-dove food contest with whoever already grazed this patch this tick.
             if (params.foodContests && bite > 0.f) {
                 const size_t cell = size_t(terrain.index(mouth.x, mouth.y));
@@ -931,7 +942,10 @@ void World::interactOne(int i, TileCtx& tc) {
                 }
                 float gain = bite * params.plantEnergy * p.plantEff;
                 c.energy += gain;
-                c.hydration = std::min(1.f, c.hydration + bite * 0.025f); // juicy grass carries some water
+                // Lush grass is juicy, sparse dry grass is not: a full bite of thick pasture waters a grazer about eleven
+                // times faster than it dries out, thin scrub barely keeps up, so dry country means walking to water.
+                const float lush = clamp01(avail / (float((x1 - x0 + 1) * (y1 - y0 + 1)) * params.plantCapacity));
+                c.hydration = std::min(1.f, c.hydration + 0.004f * lush * bite / (0.5f * std::pow(c.mass, 0.9f)));
                 c.eatenPlant += gain;
                 c.flags |= CF_EATING;
             }
@@ -993,7 +1007,8 @@ void World::interactOne(int i, TileCtx& tc) {
             // harder to single out.
             const float pack = 1.f + 0.25f * float(std::min<uint8_t>(t.hitsThisTick, 3));
             const float herd = 1.f - 0.35f * t.in[IN_CROWD];
-            float dmg = p.damage * strength * sizeEdge * pack * herd * (1.f - 0.75f * t.ph.armor);
+            float dmg = p.damage * strength * sizeEdge * pack * herd * (1.f - 0.75f * t.ph.armor) *
+                        (1.f - 0.7f * std::max(0.f, t.ph.lift - p.lift)); // fliers dodge anything that flies worse
             if (t.hitsThisTick > 0) ++tc.attacksPack;
             if (t.hitsThisTick < 255) ++t.hitsThisTick;
             t.health -= dmg;
@@ -1012,6 +1027,12 @@ void World::interactOne(int i, TileCtx& tc) {
                 c.pain = std::min(1.f, c.pain + 0.4f);
                 c.flags |= CF_POISONED;
                 if (tc.rng.chance(0.3f)) fxp(FxEvent::Poison, c.pos, {0.7f, 1.f, 0.2f, 1.f}, c.radius);
+            }
+            if (t.ph.spikes > 0.05f) { // quills: the bite costs the biter
+                c.health -= dmg * 2.f * t.ph.spikes;
+                c.pain = std::min(1.f, c.pain + 0.5f * t.ph.spikes);
+                c.flags |= CF_HURT;
+                if (tc.rng.chance(0.3f)) fxp(FxEvent::Hit, c.pos, {0.95f, 0.9f, 0.75f, 1.f}, c.radius);
             }
             if (tc.rng.chance(0.25f)) fxp(FxEvent::Hit, t.pos, {1.f, 0.25f, 0.2f, 1.f}, t.radius);
             if (t.health <= 0.f && t.alive) {
@@ -1261,7 +1282,7 @@ void World::moveAndMetabolize(int i) {
         Vec2 np = c.pos + dir * (60.f + 5.f * c.radius);
         np.x = clampf(np.x, c.radius, terrain.width - c.radius);
         np.y = clampf(np.y, c.radius, terrain.height - c.radius);
-        if (!terrain.water[terrain.index(np.x, np.y)]) {
+        if (!terrain.water[terrain.index(np.x, np.y)] || p.aquatic > 0.5f) {
             c.pos = np;
             c.vel *= 0.3f;
             c.energy -= 0.05f * c.maxEnergy;
@@ -1270,8 +1291,10 @@ void World::moveAndMetabolize(int i) {
         }
     }
     const bool phased = c.out[OUT_PHASE] > 0.3f;
-    c.vel += dir * (p.accel * thrust * (inWater ? 0.45f : 1.f));
-    c.vel *= inWater ? 0.80f : 0.88f;
+    // Fins or legs: a sea body swims faster than a land body walks through water, and flounders ashore.
+    // Wings lift the body clear of whatever is underneath.
+    c.vel += dir * (p.accel * thrust * lerp(inWater ? lerp(0.45f, 1.1f, p.aquatic) : lerp(1.f, 0.4f, p.aquatic), 1.f, p.lift));
+    c.vel *= lerp(inWater ? lerp(0.80f, 0.89f, p.aquatic) : 0.88f, 0.88f, p.lift);
 
     Vec2 push;
     const SpatialGrid& g = cgrid_;
@@ -1298,7 +1321,8 @@ void World::moveAndMetabolize(int i) {
     const float m = c.mass;
     const float basal = 0.010f * c.mass075 * (1.f + 0.5f * p.longevity);
     const float toxin = 0.008f * c.mass075 * p.toxin * params.toxinCost;
-    const float move = 0.030f * c.mass075 * thrust * thrust * (0.6f + 0.8f * c.genome.g[G_SPEED]) * (inWater ? 2.f : 1.f) *
+    const float move = 0.030f * c.mass075 * thrust * thrust * (0.6f + 0.8f * c.genome.g[G_SPEED]) *
+                       lerp(inWater ? lerp(2.f, 0.8f, p.aquatic) : lerp(1.f, 2.2f, p.aquatic), 0.9f, p.lift) * // gliding is cheap travel
                        params.moveCost;
     const float turnCost = 0.004f * m * turn * turn * params.moveCost;
     const float organScale = 0.4f + 0.6f * c.mass075; // eyes and brains scale sub-linearly with body
@@ -1316,7 +1340,13 @@ void World::moveAndMetabolize(int i) {
     const float alien = 0.003f * c.mass075 * (sq(c.genome.g[G_LINK]) + sq(c.genome.g[G_DETOX])) +
                         (c.out[OUT_OVERCLOCK] > 0.5f ? 0.004f * c.mass075 + 0.00003f * float(p.connections) : 0.f) +
                         (phased ? 0.006f * c.mass075 : 0.f);
-    const float immuneCost = 0.004f * c.mass075 * p.immunity + 0.003f * c.mass075 * p.nightVision;
+    const float immuneCost = 0.004f * c.mass075 * p.immunity + 0.003f * c.mass075 * p.nightVision +
+                             c.mass075 * (0.004f * p.wings + 0.002f * p.spikes);
+    // Photosynthesis: income scales with skin area (so small bodies gain most), daylight, keeping still, and not
+    // being shaded by neighbours. Murky water halves it.
+    if (p.photo > 0.02f)
+        c.energy = std::min(c.maxEnergy, c.energy + 0.08f * std::sqrt(m) * p.photo * c.in[IN_LIGHT] * (1.f - 0.4f * std::fabs(thrust)) *
+                                                        sq(1.f - 0.7f * c.in[IN_CROWD]) * (inWater ? 0.5f : 1.f));
     float disease = 0.f;
     if (c.infection > 0.f) {
         const float harm = params.virulence * (0.3f + 2.f * c.strain * c.strain);
@@ -1357,9 +1387,10 @@ void World::moveAndMetabolize(int i) {
             Vec2 snout = c.pos + dir * (c.radius + 6.f);
             nearWater = terrain.inside(snout.x, snout.y) && terrain.water[terrain.index(snout.x, snout.y)];
         }
-        if (params.weather) c.hydration = std::min(1.f, c.hydration + 0.0015f * rainAt(c.pos.x, c.pos.y));
+        if (params.weather) c.hydration = std::min(1.f, c.hydration + 0.0005f * rainAt(c.pos.x, c.pos.y)); // rain slows thirst but does not replace drinking
         if (nearWater) c.hydration = std::min(1.f, c.hydration + 0.02f);
-        else c.hydration -= 0.00035f * (1.f + std::max(0.f, c.temperature) * 1.5f) * (0.6f + 0.4f * std::fabs(thrust));
+        else c.hydration -= 0.00035f * (1.f + std::max(0.f, c.temperature) * 1.5f) * (0.6f + 0.4f * std::fabs(thrust)) *
+                            (1.f + 4.f * p.aquatic); // gills dry out fast
         if (c.hydration <= 0.f) {
             c.hydration = 0.f;
             c.health -= c.maxHealth * 0.002f;
@@ -1368,7 +1399,7 @@ void World::moveAndMetabolize(int i) {
     } else {
         c.hydration = 1.f;
     }
-    c.age += 1.f;
+    c.age += params.lifePace;
     if (c.age > p.lifespan) {
         c.health -= c.maxHealth * 0.002f * (1.f + (c.age - p.lifespan) / p.lifespan * 4.f);
         if (c.health <= 0.f) kill(c, DeathCause::OldAge);
@@ -1376,8 +1407,12 @@ void World::moveAndMetabolize(int i) {
     if (c.health <= 0.f) kill(c, c.lastAttacker ? DeathCause::Predation : DeathCause::Starvation);
 
     if (c.growth < 1.f && c.energy > 0.2f * c.maxEnergy) {
-        c.growth = std::min(1.f, c.growth + 1.f / p.maturity);
+        const float m0 = c.mass;
+        c.growth = std::min(1.f, c.growth + params.lifePace / p.maturity);
         updateBody(c);
+        // Hurried growth is paid for. A carcass is worth 70 per unit of mass, so bodies grown faster than normal
+        // for free would be free meat (at pace 3 that fed a runaway of 12,000 cannibals with no grazers left).
+        c.energy -= 70.f * (c.mass - m0) * (1.f - 1.f / std::max(1.f, params.lifePace));
     }
     c.clockPhase += p.clockFreq;
     if (c.clockPhase > TAU) c.clockPhase -= TAU;
@@ -1442,14 +1477,19 @@ void World::updateEnvironment() {
             float& ph = t.pheromone[t.index(c.pos.x, c.pos.y)];
             ph = std::min(4.f, ph + 0.2f * c.pheromone);
         }
-    for (const Creature& c : creatures)
+    for (Creature& c : creatures) {
         if (c.flags & CF_BLINK) {
             BehaviorAcc& a = behaviorOf(c.speciesId);
             a.blinks += 1.f;
             if (c.pain > 0.25f) a.blinkHurt += 1.f;
-            if (c.out[OUT_ATTACK] > 0.f) a.blinkAttack += 1.f;
+            c.flags |= CF_AMBUSH;
             pushFx(FxEvent::Birth, c.pos, {0.4f, 0.9f, 1.f, 1.f}, c.radius * 1.5f);
+        } else if (c.flags & CF_AMBUSH) {
+            // An ambush is a bite that lands within 30 ticks of the teleport (wanting to attack is not enough).
+            if (c.flags & CF_HIT) behaviorOf(c.speciesId).blinkAttack += 1.f;
+            if ((c.flags & CF_HIT) || c.blinkCd <= 270) c.flags &= ~CF_AMBUSH;
         }
+    }
     // Niche construction: tending raises a cell and its neighbours (the creature's own cell the most).
     for (const Creature& c : creatures)
         if (c.tend > 0.05f) {
@@ -1777,6 +1817,34 @@ int World::spawnPredators(Vec2 at, int count, float radius) {
         creatures.push_back(c);
     }
     return count;
+}
+
+std::vector<LineageScore> World::lineageScores() const {
+    std::vector<LineageScore> out;
+    std::vector<uint32_t> stack;
+    for (const Species& rootSp : species.all()) {
+        if (rootSp.parentId != 0) continue;
+        LineageScore ls;
+        ls.root = rootSp.id;
+        stack.assign(1, rootSp.id);
+        while (!stack.empty()) {
+            const Species& sp = species.get(stack.back());
+            stack.pop_back();
+            ++ls.speciesEver;
+            if (sp.alive()) { ++ls.livingSpecies; ls.population += sp.population; }
+            for (uint32_t ch : sp.children)
+                if (species.valid(ch)) stack.push_back(ch);
+        }
+        out.push_back(ls);
+    }
+    // shortcut: designed lineages are recognised from the event log, which keeps the last 4000 events, so a very old
+    // release loses its star (it stays on the board). Store a flag on Species when the save format next changes.
+    for (const WorldEvent& e : events.items)
+        if (e.kind == EventKind::Speciation && e.text.rfind("Designed lineage", 0) == 0)
+            for (LineageScore& ls : out)
+                if (ls.root == e.speciesId) ls.designed = true;
+    std::stable_sort(out.begin(), out.end(), [](const LineageScore& a, const LineageScore& b) { return a.population > b.population; });
+    return out;
 }
 
 int World::spawnGenome(const Genome& g, uint32_t speciesHint, Vec2 at, int count, float radius) {

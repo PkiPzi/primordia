@@ -1,5 +1,8 @@
 #include "sim/Scenarios.hpp"
 
+#include <algorithm>
+#include <cmath>
+
 #include "ui/Icons.hpp"
 
 namespace pm {
@@ -44,6 +47,31 @@ void makeToxicLineage(World& w) {
             edit(c.genome);
             c.ph = Phenotype::from(c.genome, w.params.specialization);
         }
+}
+
+// The first four lineages each start with one finished body plan: flier, porcupine, sunbather, swimmer.
+void makeMenagerie(World& w) {
+    static const int plan[4] = {G_WINGS, G_SPIKES, G_PHOTO, G_AQUATIC};
+    auto edit = [](Genome& g, int k) {
+        g.g[size_t(plan[k])] = 0.8f;
+        if (plan[k] != G_SPIKES) g.g[G_SIZE] = std::min(g.g[G_SIZE], 0.3f); // small bodies fly and sunbathe best
+    };
+    for (Species& s : w.species.all())
+        if (s.id >= 1 && s.id <= 4) edit(s.rep, int(s.id) - 1);
+    for (Creature& c : w.creatures)
+        if (c.speciesId >= 1 && c.speciesId <= 4) {
+            edit(c.genome, int(c.speciesId) - 1);
+            c.ph = Phenotype::from(c.genome, w.params.specialization);
+        }
+}
+
+// Every founder starts half-way to the water: clumsy waders that can already nibble algae.
+void makeWaders(World& w) {
+    for (Species& s : w.species.all()) s.rep.g[G_AQUATIC] = 0.35f;
+    for (Creature& c : w.creatures) {
+        c.genome.g[G_AQUATIC] = 0.35f;
+        c.ph = Phenotype::from(c.genome, w.params.specialization);
+    }
 }
 
 const Scenario SCENARIOS[] = {
@@ -197,9 +225,143 @@ const Scenario SCENARIOS[] = {
      },
      nullptr,
      "Overlay > Fertility shows the rare oases. Follow a creature and watch the Water bar in the Inspector."},
+    {"Water World", ICON_TINT, "Back to the sea",
+     "Small islands in a wide, algae-rich ocean. The founders are clumsy waders. The land is crowded and the sea is "
+     "empty: watch for lineages that grow fins, stop coming ashore and become true sea animals.",
+     [](WorldSettings& ws, SimParams& p) {
+         ws = WorldSettings{};
+         ws.preset = TerrainPreset::Archipelago;
+         ws.waterFraction = 0.7f;
+         ws.foundingLineages = 3;
+         ws.predatorLineages = 0;
+         p.predatorImmigration = false;
+         p.epidemics = false;
+     },
+     makeWaders,
+     "Traits > Evolution with the Aquatic gene shows bodies shifting toward water. Events > Discoveries reports the first "
+     "amphibians and the first true sea animals."},
+    {"Menagerie", ICON_PAW, "Four body plans, one world",
+     "The founders are already strange: one lineage flies, one bristles with quills, one lives on sunlight and one swims. "
+     "Hunters are loose among them. See which bodies hold their ground, which merge and which vanish.",
+     [](WorldSettings& ws, SimParams& p) {
+         ws = WorldSettings{};
+         ws.preset = TerrainPreset::Archipelago;
+         ws.foundingLineages = 4;
+         ws.predatorLineages = 2;
+         p.epidemics = false;
+     },
+     makeMenagerie,
+     "Zoom in: wings, quills, leaves and fins are drawn on the body. Traits > Evolution shows each gene rising or fading."},
 };
 
+// --- Objectives -------------------------------------------------------------
+float years(const World& w) { return float(w.year()); }
+
+// Mean of a statistic over the most recent samples (single samples are noisy).
+template <class F>
+float recent(const World& w, F f, size_t n = 20) {
+    const auto& v = w.stats.samples;
+    if (v.empty()) return 0.f;
+    n = std::min(n, v.size());
+    float sum = 0.f;
+    for (size_t i = v.size() - n; i < v.size(); ++i) sum += f(v[i]);
+    return sum / float(n);
+}
+
+// Lowest value a statistic ever took (skipping the first sample, taken before the world settles).
+template <class F>
+float lowest(const World& w, F f) {
+    float m = 1e30f;
+    for (size_t i = 1; i < w.stats.samples.size(); ++i) m = std::min(m, f(w.stats.samples[i]));
+    return m;
+}
+
+float geneShift(const World& w, int g) {
+    const auto& v = w.stats.samples;
+    return v.size() < 2 ? 0.f : recent(w, [g](const StatSample& s) { return s.geneMean[g]; }) - v.front().geneMean[g];
+}
+
+bool hasHunters(const World& w) {
+    for (const Species& s : w.species.all())
+        if (s.alive() && s.population >= 8 && s.meanGenes[G_DIET] > 0.6f) return true;
+    return false;
+}
+
+// "Still going at year N, provided `ok`": creeps to 99% and waits there until the condition holds.
+float lastUntil(const World& w, float targetYears, bool ok) {
+    const float p = years(w) / targetYears;
+    return p >= 1.f ? (ok ? 1.f : 0.99f) : p;
+}
+
+const Objective OBJECTIVES[] = {
+    {"Reach year 10 with at least 6 species alive, one of them a hunter",
+     [](const World& w) { return lastUntil(w, 10.f, w.species.aliveCount() >= 6 && hasHunters(w)); }},
+    {"Let selection move the average Size, Speed or Vision range gene by 0.15 from where the founders started",
+     [](const World& w) {
+         return std::max({std::fabs(geneShift(w, G_SIZE)), std::fabs(geneShift(w, G_SPEED)),
+                          std::fabs(geneShift(w, G_VISION_RANGE))}) / 0.15f;
+     }},
+    {"Keep hunters and grazers together until year 8 without the hunters ever dying out",
+     [](const World& w) {
+         if (lowest(w, [](const StatSample& s) { return s.carnivores; }) <= 0.f) return -1.f;
+         return lastUntil(w, 8.f, true);
+     }},
+    {"Teach the predators: attacks on toxic prey fall below half of the toxic share of the population",
+     [](const World& w) {
+         const float toxic = recent(w, [](const StatSample& s) { return s.toxic; });
+         const float hit = recent(w, [](const StatSample& s) { return s.toxicTargeted; });
+         const float attacks = recent(w, [](const StatSample& s) { return s.attackRate; });
+         if (years(w) < 1.f || toxic < 0.05f || attacks <= 0.f) return std::min(0.2f, years(w) * 0.2f);
+         return clamp01(2.f * (1.f - hit / toxic)) * 0.99f + (hit < 0.5f * toxic ? 0.01f : 0.f);
+     }},
+    {"Evolve resistance: raise the average Immunity gene by 0.06",
+     [](const World& w) { return std::max(0.f, geneShift(w, G_IMMUNITY)) / 0.06f; }},
+    {"Have 6 species alive at once",
+     [](const World& w) { return float(w.species.aliveCount()) / 6.f; }},
+    {"Survive to year 8 without the population ever falling below 300",
+     [](const World& w) {
+         if (lowest(w, [](const StatSample& s) { return s.population; }) < 300.f) return -1.f;
+         return lastUntil(w, 8.f, true);
+     }},
+    {"Keep generosity alive: at year 6, at least 2% of creatures are still sharing food",
+     [](const World& w) { return lastUntil(w, 6.f, recent(w, [](const StatSample& s) { return s.sharing; }, 60) >= 0.02f); }},
+    {"Have 60 species alive at once",
+     [](const World& w) { return float(w.species.aliveCount()) / 60.f; }},
+    {"See a predator species (average Diet gene above 0.6) arise from the grazers",
+     [](const World& w) {
+         float best = 0.f;
+         for (const Species& s : w.species.all())
+             if (s.alive() && s.population >= 8) best = std::max(best, s.meanGenes[G_DIET]);
+         return best / 0.6f;
+     }},
+    {"Outlast the drought: reach year 8 without the population ever falling below 250",
+     [](const World& w) {
+         if (lowest(w, [](const StatSample& s) { return s.population; }) < 250.f) return -1.f;
+         return lastUntil(w, 8.f, true);
+     }},
+    {"Evolve a true sea animal: a species of 20 or more with an average Aquatic gene above 0.7",
+     [](const World& w) {
+         float best = 0.f;
+         for (const Species& s : w.species.all())
+             if (s.alive() && s.population >= 20) best = std::max(best, s.meanGenes[G_AQUATIC]);
+         return best / 0.7f;
+     }},
+    {"Keep the menagerie varied: at year 5, at least two of the four body plans (wings, quills, sun-fed skin, fins: gene above 0.5) still number 20 or more",
+     [](const World& w) {
+         static const int plan[4] = {G_WINGS, G_SPIKES, G_PHOTO, G_AQUATIC};
+         int n[4] = {}, kept = 0;
+         for (const Creature& c : w.creatures)
+             for (int k = 0; k < 4; ++k) n[k] += c.genome.g[size_t(plan[k])] > 0.5f;
+         for (int k = 0; k < 4; ++k) kept += n[k] >= 20;
+         return lastUntil(w, 5.f, kept >= 2);
+     }},
+};
+static_assert(sizeof(OBJECTIVES) / sizeof(OBJECTIVES[0]) == sizeof(SCENARIOS) / sizeof(SCENARIOS[0]),
+              "every scenario needs an objective");
+
 } // namespace
+
+const Objective& objective(int i) { return OBJECTIVES[i]; }
 
 int scenarioCount() { return int(sizeof(SCENARIOS) / sizeof(SCENARIOS[0])); }
 const Scenario& scenario(int i) { return SCENARIOS[i]; }

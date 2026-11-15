@@ -73,6 +73,7 @@ private:
         float fov, phase, signal, flags;
         float health, eye, thrust, toxin;
         float nightVision, sick, pad0, pad1;
+        float aquatic, wings, spikes, photo;
     };
     struct CorpseInst {
         float x, y, radius, fresh;

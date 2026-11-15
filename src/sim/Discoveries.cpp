@@ -27,6 +27,11 @@ enum Tag : uint8_t {
     T_PLANT_DEF = 93,
     T_ARMS_RACE = 94,
     T_PLANT_SPREAD = 95,
+    T_AMPHIBIAN = 96,
+    T_MARINE = 97,
+    T_FLIER = 98,
+    T_QUILLS = 99,
+    T_SUNBATHER = 100,
 };
 
 const char* const CTX_WHEN[BehaviorAcc::CTX] = {"when hurt", "when a bigger creature is near", "while eating",
@@ -70,13 +75,33 @@ BehaviorAcc& World::behaviorOf(uint32_t speciesId) {
     return behav_[(speciesId ? speciesId : 1) - 1];
 }
 
-void World::discover(uint8_t tag, uint32_t speciesId, Vec2 pos, std::string text, uint32_t bucket) {
+uint64_t World::discoveryKey(uint8_t tag, uint32_t speciesId, uint32_t bucket) const {
     // One entry per behaviour per genus: close relatives doing the same thing are not news.
     const uint64_t who = speciesId && species.valid(speciesId) ? genusKey(species.get(speciesId).genus) : 0;
-    const uint64_t key = (who << 32) | (uint64_t(bucket) << 8) | tag;
-    if (!announced_.insert(key).second) return;
-    // Bucketed (repeatable) discoveries are keyed by tag alone after a reload; good enough for a journal.
-    announced_.insert((who << 32) | tag);
+    return (who << 32) | (uint64_t(bucket & 0xffffffu) << 8) | tag;
+}
+
+void World::discover(uint8_t tag, uint32_t speciesId, Vec2 pos, std::string text, uint32_t bucket) {
+    const uint64_t key = discoveryKey(tag, speciesId, bucket);
+    if (announced_.count(key)) return;
+    // Ongoing behaviours (no bucket) must hold for 2000 ticks without a break: one lucky scan is not a behaviour.
+    // Bucketed entries are one-off events (a crash, a fast year) and are reported at once.
+    if (!bucket) {
+        constexpr int SCAN_EVERY = 50, NEEDED = 40; // census interval, scans in a row
+        Streak& st = streaks_[key];
+        st.scans = tickCount - st.lastTick <= SCAN_EVERY ? st.scans + 1 : 1;
+        st.lastTick = tickCount;
+        if (st.scans < NEEDED) return;
+        streaks_.erase(key);
+        // The first three lineages to do something are news; after that it is just how this world works.
+        int same = 0;
+        for (const WorldEvent& e : events.items) same += e.kind == EventKind::Discovery && e.tag == tag;
+        if (same >= 3) {
+            announced_.insert(key);
+            return;
+        }
+    }
+    announced_.insert(key);
     events.push({tickCount, EventKind::Discovery, speciesId, pos, std::move(text), tag});
 }
 
@@ -112,6 +137,7 @@ void World::scanBehaviours() {
             else if (heard < 0.02f) { a.nQuiet[ch] += 1.f; a.spdQuiet[ch] += speed; }
         }
         if (c.tend > 0.3f) a.tenders += 1.f;
+        if (c.flags & CF_IN_WATER) a.wet += 1.f;
         plastic[c.speciesId - 1] += c.ph.learnRate;
         float l1 = 0.f;
         for (int j = 0; j < N_LEARN; ++j) l1 += std::fabs(c.learn[j]);
@@ -209,14 +235,35 @@ void World::scanBehaviours() {
             }
         }
         if (a.bites >= 60.f) {
-            if (a.bitesOwn >= 0.3f * a.bites)
+            // Farmers mostly eat what their own kind grew; poachers mostly live off another species' work. Two
+            // species grazing each other's fields a little is just shared pasture, not news.
+            if (a.bitesOwn >= 0.4f * a.bites && a.bitesOwn > 2.f * a.bitesOther)
                 discover(T_FARM, sid, sp.centroid,
                          name(sid) + " are farmers: " + pct(a.bitesOwn / a.bites) + " of their grazing is on soil their own species tended");
-            if (a.bitesOther >= 0.25f * a.bites && species.valid(a.otherTiller) && a.otherTiller != sid)
+            if (a.bitesOther >= 0.4f * a.bites && a.bitesOther > 2.f * a.bitesOwn && species.valid(a.otherTiller) &&
+                a.otherTiller != sid &&
+                species.get(a.otherTiller).genus != sp.genus) // grazing a sister species' fields is family business
                 discover(T_POACH, sid, sp.centroid,
                          name(sid) + " poach the fields of " + name(a.otherTiller) + " (" + pct(a.bitesOther / a.bites) +
                              " of their bites)");
         }
+        // Life in the sea: the body has to have changed (the Aquatic gene) and the animals have to actually live there.
+        {
+            const float aq = sp.meanGenes[G_AQUATIC], inSea = a.wet / a.n;
+            if (aq > 0.7f && inSea > 0.65f)
+                discover(T_MARINE, sid, sp.centroid,
+                         name(sid) + " have left the land for good: sea animals that spend " + pct(inSea) + " of their lives in the water");
+            else if (aq > 0.3f && inSea > 0.25f && inSea < 0.8f)
+                discover(T_AMPHIBIAN, sid, sp.centroid,
+                         name(sid) + " are amphibious: at home on the shore, " + pct(inSea) + " of the time in the water");
+        }
+        // New body plans: the gene has to have gone most of the way, species-wide.
+        if (sp.meanGenes[G_WINGS] > 0.55f)
+            discover(T_FLIER, sid, sp.centroid, name(sid) + " have taken to the air: winged bodies that cross water and dodge grounded hunters");
+        if (sp.meanGenes[G_SPIKES] > 0.55f)
+            discover(T_QUILLS, sid, sp.centroid, name(sid) + " grew quills: whoever bites them is hurt back");
+        if (sp.meanGenes[G_PHOTO] > 0.55f)
+            discover(T_SUNBATHER, sid, sp.centroid, name(sid) + " live on sunlight: green-skinned animals that feed like plants");
         const float meanLearned = learned[s] / std::max(1.f, a.n);
         if (plastic[s] / std::max(1.f, a.n) > 0.003f && meanLearned > 0.04f)
             discover(T_LEARN, sid, sp.centroid,
@@ -226,7 +273,7 @@ void World::scanBehaviours() {
             if (a.blinkHurt >= 0.5f * a.blinks)
                 discover(T_BLINK_ESC, sid, sp.centroid, name(sid) + " blink away when hurt: teleporting as an escape");
             else if (a.blinkAttack >= 0.5f * a.blinks)
-                discover(T_BLINK_AMBUSH, sid, sp.centroid, name(sid) + " blink while attacking: a teleport ambush");
+                discover(T_BLINK_AMBUSH, sid, sp.centroid, name(sid) + " blink onto their prey: a teleport ambush");
         }
         if (a.linkers >= 20.f) {
             const float ln = a.linkN / a.linkers, sy = a.linkSync / a.linkers;
@@ -241,7 +288,7 @@ void World::scanBehaviours() {
         // Forget slowly so the tallies describe the last few thousand ticks.
         const float keep = 0.97f;
         a.n *= keep; a.tenders *= keep; a.bites *= keep; a.bitesOwn *= keep; a.bitesOther *= keep;
-        a.blinks *= keep; a.blinkHurt *= keep; a.blinkAttack *= keep;
+        a.blinks *= keep; a.blinkHurt *= keep; a.blinkAttack *= keep; a.wet *= keep;
         a.linkN *= keep; a.linkSync *= keep; a.linkers *= keep;
         for (int k = 0; k < BehaviorAcc::CTX; ++k) a.nCtx[k] *= keep;
         for (int ac = 0; ac < BehaviorAcc::ACT; ++ac) {
@@ -272,7 +319,7 @@ void World::scanBehaviours() {
                     std::snprintf(b, sizeof b, "%s evolved fast: %s %s from %.2f to %.2f in one year", sp.name().c_str(),
                                   GENE_INFO[best].name, bestD > 0 ? "rose" : "fell", prevGenes_[s][size_t(best)],
                                   sp.meanGenes[best]);
-                    discover(T_FAST_EVO, sp.id, sp.centroid, b, uint32_t(year));
+                    discover(T_FAST_EVO, sp.id, sp.centroid, b, uint32_t(year) + 1);
                 }
             }
             prevGenes_[s] = sp.meanGenes;
@@ -285,7 +332,7 @@ void World::scanBehaviours() {
     if (recentPeak_ > 400.f && pop < 0.45f * recentPeak_) {
         char b[160];
         std::snprintf(b, sizeof b, "Population crash: %d creatures left, down from a recent peak of %d", int(pop), int(recentPeak_));
-        discover(T_CRASH, 0, {}, b, uint32_t(year));
+        discover(T_CRASH, 0, {}, b, uint32_t(year) + 1);
         recentPeak_ = pop;
     }
     if (!stats.samples.empty()) {

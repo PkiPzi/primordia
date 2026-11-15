@@ -69,6 +69,7 @@ void main(){
     col = mix(vec3(0.17,0.56,0.62), vec3(0.03,0.11,0.24), smoothstep(0.0,0.85,depth));
     float wave = sin(w.x*0.035 + uTime*1.3 + sin(w.y*0.02+uTime*0.7)*2.0) * sin(w.y*0.03 - uTime*1.1);
     col += vec3(0.035,0.05,0.06)*wave*(1.0-depth);
+    col = mix(col, vec3(0.16,0.50,0.30), clamp(sqrt(dyn.r),0.0,1.0)*0.38); // algae blooms tint the water green
     float foam = smoothstep(0.03, 0.0, uSea - e) * (0.55+0.45*sin(uTime*2.0 + w.x*0.05 + w.y*0.03));
     col = mix(col, vec3(0.86,0.95,0.95), foam*0.5);
     float ice = smoothstep(-0.38, -0.62, temp);
@@ -130,9 +131,10 @@ layout(location=3) in vec4 iTraits;
 layout(location=4) in vec4 iAnim;
 layout(location=5) in vec4 iState;
 layout(location=6) in vec4 iExtra;
+layout(location=7) in vec4 iBody;
 uniform vec2 uCenter; uniform float uZoom; uniform vec2 uViewPx; uniform vec2 uFb;
 out vec2 vLocal;
-flat out vec4 vColor; flat out vec4 vTraits; flat out vec4 vAnim; flat out vec4 vState; flat out vec4 vExtra;
+flat out vec4 vColor; flat out vec4 vTraits; flat out vec4 vAnim; flat out vec4 vState; flat out vec4 vExtra; flat out vec4 vBody;
 const float EXT = 2.4;
 void main(){
   vec2 local = aCorner*EXT;
@@ -141,12 +143,12 @@ void main(){
   vec2 world = iA.xy + iA.w*vec2(local.x*c - local.y*s, local.x*s + local.y*c);
   vec2 scr = (world - uCenter)*uZoom + uViewPx;
   gl_Position = vec4(scr.x/uFb.x*2.0-1.0, 1.0 - scr.y/uFb.y*2.0, 0.0, 1.0);
-  vColor = iColor; vTraits = iTraits; vAnim = iAnim; vState = iState; vExtra = iExtra;
+  vColor = iColor; vTraits = iTraits; vAnim = iAnim; vState = iState; vExtra = iExtra; vBody = iBody;
 })";
 
 const char* CREATURE_FS = R"(#version 330 core
 in vec2 vLocal;
-flat in vec4 vColor; flat in vec4 vTraits; flat in vec4 vAnim; flat in vec4 vState; flat in vec4 vExtra;
+flat in vec4 vColor; flat in vec4 vTraits; flat in vec4 vAnim; flat in vec4 vState; flat in vec4 vExtra; flat in vec4 vBody;
 layout(location=0) out vec4 oColor;
 layout(location=1) out vec4 oGlow;
 uniform float uTime;
@@ -156,8 +158,10 @@ uniform int uBlob;
 float sdEllipse(vec2 p, vec2 r){ float k0 = length(p/r); float k1 = length(p/(r*r)); return k0*(k0-1.0)/max(k1,1e-4); }
 float smin(float a, float b, float k){ float h = clamp(0.5+0.5*(b-a)/k,0.0,1.0); return mix(b,a,h)-k*h*(1.0-h); }
 float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+float sdSeg(vec2 p, vec2 a, vec2 b){ vec2 pa = p-a, ba = b-a; return length(pa - ba*clamp(dot(pa,ba)/dot(ba,ba), 0.0, 1.0)); }
 void main(){
   vec2 p = vLocal;
+  float aquatic = vBody.x, wings = vBody.y, spikes = vBody.z, photo = vBody.w;
   float pattern = vTraits.x, diet = vTraits.y, armor = vTraits.z, weapon = vTraits.w;
   float fov = vAnim.x, phase = vAnim.y, signal = vAnim.z;
   int flags = int(vAnim.w + 0.5);
@@ -179,6 +183,48 @@ void main(){
     tail = max(tail, max(p.x + 0.55, -p.x - 1.8));
     shape = smin(body, tail, 0.18);
   }
+  // Body plan: legs for the land, fins for the sea, wings, quills and leaves, each grown as far as its gene.
+  vec2 bodyR = (uBlob == 1) ? vec2(1.0) : br;
+  vec2 q2 = vec2(p.x, abs(p.y));
+  float ang2 = atan(p.y, p.x);
+  float rr = length(p / bodyR);
+  float gait = 0.3 + 0.7*abs(thrust);
+  float legs = 1e3, fins = 1e3, wingD = 1e3, quills = 1e3, leaves = 1e3;
+  float legAmt = 1.0 - smoothstep(0.25, 0.7, aquatic);
+  if (legAmt > 0.05) {
+    for (int k = -1; k <= 1; k++) {
+      float sw = 0.2*sin(phase*2.0 + float(k)*2.1 + (p.y > 0.0 ? 0.0 : 3.14159))*gait;
+      float bx = 0.42*float(k) + 0.08;
+      legs = min(legs, sdSeg(q2, vec2(bx, bodyR.y*0.7), vec2(bx + sw, bodyR.y + 0.42*legAmt)) - 0.075);
+    }
+    shape = min(shape, legs);
+  }
+  float finAmt = smoothstep(0.25, 0.8, aquatic);
+  if (finAmt > 0.02) {
+    vec2 f = vec2(q2.x - 0.15, q2.y - bodyR.y*0.85);
+    f = vec2(f.x*0.77 - f.y*0.64, f.x*0.64 + f.y*0.77);
+    fins = sdEllipse(f + vec2(0.3*finAmt, 0.0), vec2(0.5*finAmt + 0.02, 0.17*finAmt + 0.02));
+    float tx = (uBlob == 1) ? -1.15 : -1.72;
+    float flap = 0.24*sin(phase + 6.9)*gait*(uBlob == 1 ? 0.0 : 1.0);
+    fins = min(fins, sdEllipse(p - vec2(tx, flap), vec2(0.2, 0.12 + 0.5*finAmt)));
+    shape = min(shape, fins);
+  }
+  if (wings > 0.12) {
+    float span = (0.45 + 1.3*wings)*(0.8 + 0.2*sin(phase*2.2));
+    float along = clamp((q2.y - bodyR.y*0.4)/span, 0.0, 1.0); // 0 at the shoulder, 1 at the tip
+    vec2 w = vec2((q2.x - 0.15 + 0.55*(q2.y - bodyR.y*0.4))*(1.0 + 1.6*along*along), q2.y - bodyR.y*0.4 - span*0.5);
+    wingD = sdEllipse(w, vec2(0.34 + 0.3*wings, span*0.5))*0.6;
+    shape = min(shape, wingD);
+  }
+  if (spikes > 0.12 && abs(ang2) > 0.75) {
+    float t = abs(fract(ang2*1.75 + 0.5) - 0.5)*2.0;
+    quills = (rr - (1.0 + 0.62*spikes*max(0.0, 1.0 - 2.6*t)))*0.6;
+    shape = min(shape, quills);
+  }
+  if (photo > 0.12 && abs(ang2) > 0.5) {
+    leaves = (rr - (1.0 + 0.5*photo*pow(abs(sin(ang2*2.5)), 0.7)))*0.7;
+    shape = min(shape, leaves);
+  }
   float jaws = 1e3;
   float horns = 1e3;
   if (weapon > 0.15 && diet > 0.45) {
@@ -198,7 +244,7 @@ void main(){
   float alpha = 1.0 - smoothstep(-aa, aa, shape);
   // Soft drop shadow, light from the upper left in world space.
   float ang = vExtra.z;
-  vec2 lw = vec2(0.22, 0.32);
+  vec2 lw = vec2(0.22, 0.32)*(1.0 + 2.2*wings); // fliers ride above their shadow
   vec2 lo = vec2(lw.x*cos(ang) + lw.y*sin(ang), -lw.x*sin(ang) + lw.y*cos(ang));
   vec2 ps = p - lo;
   float shadowD = (uBlob == 1) ? length(ps) - 1.0 : sdEllipse(ps, br);
@@ -207,7 +253,7 @@ void main(){
   vec3 glow = vec3(0.0); float glowA = 0.0;
   if (uSignals == 1 && abs(signal) > 0.15) {
     vec3 sc = signal > 0.0 ? vec3(0.30,0.90,1.00) : vec3(1.00,0.35,0.80);
-    float g = exp(-max(shape,0.0)*2.6) * (abs(signal)-0.15) * 1.2;
+    float g = exp(-max(shape,0.0)*2.6) * smoothstep(-0.3, 0.0, shape) * (abs(signal)-0.15) * 1.2; // a halo, not a whiteout
     glow += sc*g; glowA = max(glowA, g);
   }
   bool selected = (flags & 256) != 0, hover = (flags & 512) != 0;
@@ -243,6 +289,20 @@ void main(){
     float dot = 1.0 - smoothstep(0.08, 0.13, length(f));
     col = mix(col, vec3(0.75,1.0,0.25), dot*inBody*step(0.55,h)*smoothstep(0.3,0.8,toxin));
   }
+  float outBody = step(0.0, body);
+  if (photo > 0.12) {
+    float green = smoothstep(0.1, 0.8, photo);
+    col = mix(col, vec3(0.22,0.68,0.2)*(1.05 - 0.25*r), 0.7*green*inBody);
+    float lm = (1.0 - smoothstep(-aa, aa, leaves))*outBody;
+    float vein = smoothstep(0.75, 1.0, abs(cos(ang2*2.5)));
+    col = mix(col, mix(vec3(0.3,0.78,0.25), vec3(0.12,0.4,0.12), vein), lm);
+  }
+  if (fins < 1e2) col = mix(col, min(base*1.25 + 0.06, vec3(1.0))*(0.85 + 0.15*sin(q2.y*22.0)), (1.0 - smoothstep(-aa, aa, fins))*outBody);
+  if (wingD < 1e2) {
+    float wm = (1.0 - smoothstep(-aa, aa, wingD))*outBody;
+    col = mix(col, mix(base, vec3(1.0), 0.6)*(0.78 + 0.22*step(0.0, sin(q2.y*13.0 - q2.x*9.0))), wm);
+  }
+  if (quills < 1e2) col = mix(col, mix(vec3(0.95,0.92,0.82), vec3(0.3,0.22,0.15), smoothstep(1.1, 1.0 + 0.6*spikes, rr)), (1.0 - smoothstep(-aa, aa, quills))*outBody);
   if (horns < 1e2) {
     float hm = 1.0 - smoothstep(-aa, aa, horns);
     col = mix(col, vec3(0.88,0.84,0.72), hm*step(0.0, body));
@@ -488,7 +548,7 @@ bool Renderer::init() {
     glBindBuffer(GL_ARRAY_BUFFER, quadVbo_);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 8, nullptr);
-    makeInstanced(creatureVao_, creatureVbo_, 6);
+    makeInstanced(creatureVao_, creatureVbo_, 7);
     makeInstanced(corpseVao_, corpseVbo_, 2);
     makeInstanced(particleVao_, particleVbo_, 2);
 
@@ -773,7 +833,8 @@ Renderer::CreatureInst Renderer::makeInstance(const World& world, const Creature
             c.genome.g[G_PATTERN], c.ph.diet, c.ph.armor, c.ph.weapon,
             c.ph.fov, c.animPhase, c.signal, float(flags),
             c.health / c.maxHealth, c.genome.g[G_VISION_RANGE], c.out[OUT_THRUST], c.ph.toxin,
-            c.ph.nightVision, c.infection > 0.f ? 1.f : 0.f, c.angle, c.growth};
+            c.ph.nightVision, c.infection > 0.f ? 1.f : 0.f, c.angle, c.growth,
+            c.ph.aquatic, c.ph.wings, c.ph.spikes, c.ph.photo};
 }
 
 void Renderer::drawCreatureInto(const CreatureInst& in, int x, int y, int size, float time) {
@@ -882,6 +943,14 @@ void Renderer::drawCreatures(const World& world, const Camera& cam, const Render
         creatureInst_.push_back(makeInstance(world, c, rs));
         // Keep distant herds visible as dots when zoomed far out.
         creatureInst_.back().radius = std::max(creatureInst_.back().radius, rs.minCreaturePx / cam.zoom);
+        // Things creatures do to each other that would otherwise be invisible: calls ripple outward, blinks flash.
+        if (rs.particles && rs.showSignals && particles_.size() < 6000) {
+            for (int k = 0; k < 2; ++k)
+                if (c.call[k] > 0.3f && rng_.chance(0.04f))
+                    particles_.push_back({c.pos, {}, 0.8f, 0.8f, 70.f + 3.f * c.radius, 1.f,
+                                          k ? Color{0.85f, 0.55f, 1.f, 0.6f} : Color{0.5f, 0.95f, 1.f, 0.6f}});
+            if (c.flags & CF_BLINK) particles_.push_back({c.pos, {}, 0.5f, 0.5f, 5.f * c.radius, 1.f, {0.9f, 0.7f, 1.f, 1.f}});
+        }
     }
     // Draw the selected creature last so its ring sits on top.
     auto sel = std::find_if(creatureInst_.begin(), creatureInst_.end(),

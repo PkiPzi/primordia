@@ -13,6 +13,7 @@ struct Options {
     int threads = 0;          // 0 = all hardware threads
     int population = -1;
     float shocks = -1.f;      // random shocks per year; <0 = default
+    float pace = 0.f;         // evolution pace (ageing speed and mutation multiplier); 0 = default
     int thinkEvery = 0;       // 0 = default (see SimParams::thinkEvery)
     float worldSize = 0.f;    // 0 = default
     std::string load;
@@ -25,6 +26,7 @@ struct Options {
     std::string icon;         // render the app icon PNG and quit
     int overlay = -1;
     int scenario = -1;        // start from a built-in scenario (index)
+    std::vector<std::string> release; // headless: genome text files to release as designed lineages (a tournament)
     std::string newick;       // headless: write the tree of life here at the end
     std::vector<std::string> focus; // panels to bring to front (screenshot testing)
     int warmup = 0;           // ticks to simulate before the first frame

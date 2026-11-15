@@ -649,6 +649,8 @@ void App::applyRequests() {
             rs_.highlightSpecies = 0;
             cam_.fit(w.terrain.width, w.terrain.height);
             app_.checkpoints.clear();
+            app_.ghost.clear();
+            app_.currentScenario = -1; // the save does not record which scenario it came from
             app_.notify("Loaded " + app_.requestLoad);
         } else {
             app_.notify("Load failed: " + err);
@@ -763,6 +765,7 @@ void App::applyRequests() {
         rs_.highlightSpecies = 0;
         cam_.fit(w.terrain.width, w.terrain.height);
         app_.checkpoints.clear();
+        app_.ghost.clear();
         app_.notify("New world created (seed " + std::to_string(app_.newWorld.seed) + ")");
     }
 }
@@ -813,9 +816,14 @@ void App::frame(float dt) {
     if (app_.requestRewind >= 0 && app_.requestRewind < int(app_.checkpoints.size())) {
         std::string err;
         const auto& cp = app_.checkpoints[size_t(app_.requestRewind)];
+        // Keep what happened after the checkpoint so the new branch can be compared with it.
+        std::vector<StatSample> abandoned;
+        for (const StatSample& s : world_->stats.samples)
+            if (s.tick >= float(cp.tick)) abandoned.push_back(s);
         if (world_->restore(cp.data, err)) {
+            if (abandoned.size() >= 2) app_.ghost = std::move(abandoned);
             char buf[96];
-            std::snprintf(buf, sizeof buf, "Rewound to year %.2f. History from here on is a new branch.",
+            std::snprintf(buf, sizeof buf, "Rewound to year %.2f. Population shows the old branch for comparison.",
                           double(cp.tick) / world_->params.yearLength);
             app_.notify(buf);
             app_.checkpoints.resize(size_t(app_.requestRewind) + 1);

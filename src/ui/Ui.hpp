@@ -87,6 +87,7 @@ struct AppState {
     };
     std::vector<Checkpoint> checkpoints; // newest last
     int requestRewind = -1;
+    std::vector<StatSample> ghost; // the timeline abandoned by the last rewind, for comparing branches
     bool autosaveExists = false;
     float autosaveMinutes = 10.f;
     std::string lastSavePath;
@@ -94,9 +95,13 @@ struct AppState {
     // Toast notifications
     std::string toast;
     float toastTime = 0.f;
+    Vec2 toastPos;               // where a clickable toast (a discovery) flies to
+    uint32_t toastSpecies = 0;
+    bool toastClickable = false;
     void notify(std::string msg) {
         toast = std::move(msg);
         toastTime = 3.5f;
+        toastClickable = false;
     }
 };
 
@@ -177,6 +182,10 @@ private:
     char renameBuf_[96] = {};
     uint32_t renameId_ = 0;
     int senseFrame_ = 0;
+    // scenario objective, cached between evaluations
+    float goalTimer_ = 0.f, goalProgress_ = 0.f;
+    int64_t goalTick_ = 0;
+    bool goalDone_ = false;
 };
 
 } // namespace pm

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <iosfwd>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -67,6 +68,7 @@ struct SimParams {
     float thermalCost = 1.0f;
     // Evolution
     float mutationRate = 1.0f;
+    float lifePace = 1.0f;          // ageing speed: above 1, lives and generations are shorter, so evolution runs faster
     float speciesThreshold = 0.8f;
     float specialization = 1.4f;
     bool sexualReproduction = true;
@@ -81,7 +83,7 @@ struct SimParams {
     bool thirst = true;             // creatures must drink (or eat lush grass) to stay hydrated
     // Disease
     bool epidemics = true;          // spontaneous outbreaks
-    float outbreaksPerYear = 0.2f;
+    float outbreaksPerYear = 0.5f;  // a first outbreak is expected around year 2
     float transmission = 0.05f;     // infection chance per tick of contact
     float virulence = 1.0f;
     int diseaseDuration = 1800;     // ticks until recovery
@@ -135,6 +137,7 @@ enum CreatureFlags : uint32_t {
     CF_BLINK = 1u << 12, // teleported this tick
     CF_SICK = 1u << 10,
     CF_IMMUNE = 1u << 11,
+    CF_AMBUSH = 1u << 13, // blinked moments ago and has not bitten yet
 };
 
 enum class DeathCause : uint8_t { None, Starvation, OldAge, Predation, Poison, Meteor, Smite, Plague, Thirst };
@@ -282,6 +285,7 @@ struct BehaviorAcc {
     float bites = 0, bitesOwn = 0, bitesOther = 0; // grazing bites by whose soil they came from
     float tenders = 0;
     float blinks = 0, blinkHurt = 0, blinkAttack = 0; // teleports and what the blinker was doing
+    float wet = 0;                 // samples spent in water
     float linkN = 0, linkSync = 0, linkers = 0;       // neural-link partners and thought synchrony
     uint32_t otherTiller = 0;      // species whose fields were poached most recently
 };
@@ -322,6 +326,14 @@ struct TileCtx {
         contestDD = contestHD = contestHH = attacksIntra = attacksInter = attacksToxic = attacksPack = litters = 0;
         fx.clear(); bites.clear(); births.clear(); hybrids.clear();
     }
+};
+
+// A founding lineage and everything descended from it (see World::lineageScores).
+struct LineageScore {
+    uint32_t root = 0;        // founding species
+    int population = 0;       // living creatures in the whole clade
+    int livingSpecies = 0, speciesEver = 0;
+    bool designed = false;    // released from the Genome Lab rather than arising in the wild
 };
 
 struct TickTimings {
@@ -406,6 +418,7 @@ public:
     const SpeciesSkills* skillsOf(uint32_t speciesId) const {
         return speciesId >= 1 && speciesId <= skills.size() && skills[speciesId - 1].valid ? &skills[speciesId - 1] : nullptr;
     }
+    std::vector<LineageScore> lineageScores() const;  // every founding lineage, most populous first
     std::string bestAtText(uint32_t speciesId) const; // e.g. "Hunting, Speed, Brainpower" or "no standout skill"
 
 private:
@@ -436,6 +449,7 @@ private:
     void scanBehaviours();
     void randomShock();
     void discover(uint8_t tag, uint32_t speciesId, Vec2 pos, std::string text, uint32_t bucket = 0);
+    uint64_t discoveryKey(uint8_t tag, uint32_t speciesId, uint32_t bucket) const;
     BehaviorAcc& behaviorOf(uint32_t speciesId);
 
     ThreadPool* pool_;
@@ -459,7 +473,9 @@ private:
     uint64_t lastHybridPair_ = 0;
     std::vector<int64_t> recentExtinctions_;
     std::vector<BehaviorAcc> behav_;                 // indexed by species id - 1 (transient)
-    std::unordered_set<uint64_t> announced_;          // (species, bucket, tag) already in the journal
+    std::unordered_set<uint64_t> announced_;          // (genus, bucket, tag) already in the journal
+    struct Streak { int64_t lastTick = 0; int scans = 0; };
+    std::unordered_map<uint64_t, Streak> streaks_;    // how long each candidate discovery has held without a break
     std::vector<std::array<float, G_COUNT>> prevGenes_; // species mean genes one year ago
     int64_t lastGeneYear_ = -1;
     std::vector<float> plantDef2_, plantSpr2_; // scratch buffers for the flora takeover pass

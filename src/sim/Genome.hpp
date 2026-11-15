@@ -38,6 +38,10 @@ enum Gene : int {
     G_PLASTICITY,  // lifetime learning rate (costs upkeep)
     G_LINK,        // strength of the neural link to nearby kin (alien: brains share thoughts)
     G_DETOX,       // tolerance of plant chemical defences (costs upkeep)
+    G_AQUATIC,     // 0 = land animal, 1 = sea animal: swimming, gills and feeding in water at the cost of life on land
+    G_WINGS,       // flight: skims over water and dodges grounded attackers; costly, and heavy bodies get little lift
+    G_SPIKES,      // quills: whoever bites this creature is hurt back
+    G_PHOTO,       // photosynthetic skin: energy from daylight when still and uncrowded, at the cost of speed and digestion
     G_COUNT
 };
 
@@ -165,6 +169,10 @@ struct Phenotype {
     float linkStrength; // coupling to linked kin's hidden state
     float cOff, sOff, cStep, sStep; // eye-ray rotations: first ray vs heading, and between neighbouring rays
     float detox;        // resistance to plant defences
+    float aquatic;      // 0 = built for land, 1 = built for the sea
+    float wings, lift;  // wing size, and the flight it actually buys this body (heavy bodies get less)
+    float spikes;       // quills that hurt attackers
+    float photo;        // photosynthetic skin
     int connections;
 
     static Phenotype from(const Genome& g, float specialization);

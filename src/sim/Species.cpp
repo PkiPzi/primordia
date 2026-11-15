@@ -39,6 +39,10 @@ const EpithetSet EPITHETS[] = {
     {{"instinctivus", "innatus", "rigidus"}, {"docilis", "sagax", "callidus"}},
     {{"solivagus", "eremita", "segregatus"}, {"collectivus", "hiveus", "consors"}},
     {{"vulnerabilis", "tener", "imprudens"}, {"purgatus", "resistens", "venenivorus"}},
+    {{"terrestris", "campestris", "littoralis"}, {"marinus", "aquaticus", "pelagicus"}},
+    {{"pedester", "cursor", "ambulans"}, {"volans", "alatus", "aerius"}},
+    {{"nudus", "levis", "inermis"}, {"spinosus", "hystrix", "aculeatus"}},
+    {{"pallidus", "vorax", "umbraticus"}, {"viridis", "solaris", "phototrophus"}},
 };
 
 static_assert(std::size(EPITHETS) == G_COUNT, "one epithet set per gene");

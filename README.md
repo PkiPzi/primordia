@@ -20,7 +20,7 @@ Command-line options (`./run.sh --help`):
 
 | Option | Meaning |
 | --- | --- |
-| `--scenario N` | start from a scenario (0-10, in welcome-screen order) |
+| `--scenario N` | start from a scenario (0-12, in welcome-screen order) |
 | `--seed N` | world seed |
 | `--size N` | world width/height in units (default 4096) |
 | `--population N` | initial creatures |
@@ -30,12 +30,14 @@ Command-line options (`./run.sh --help`):
 | `--bench` | headless throughput benchmark |
 | `--screenshot FILE --frames N` | render N frames offscreen and save a PNG |
 | `--newick FILE` | headless: write the tree of life (Newick) when the run ends |
+| `--release FILE` | headless: release a genome (Genome Lab > Copy as text, saved to a file) as a designed lineage; repeat the option to pit several designs against each other. The run ends with a lineage ranking |
 
 Saves, screenshots, time-lapse frames and exports (statistics CSV, species CSV, tree of life in Newick format
 for tools like FigTree or iTOL) go to `~/Documents/Primordia/`. The world autosaves
 every 10 minutes and on exit, and the welcome screen offers **Continue where you left off**. The world also
 keeps a checkpoint for each of the last 8 simulated years in memory: **Simulation > Rewind to** (or the
-rewind button on the toolbar) jumps back so you can branch history and try something different.
+rewind button on the toolbar) jumps back so you can branch history and try something different. After a rewind the
+Population chart keeps the abandoned timeline as a grey line, so the two branches can be compared.
 
 ## Controls
 
@@ -60,7 +62,7 @@ rewind button on the toolbar) jumps back so you can branch history and try somet
 
 ## What evolves
 
-**Body (23 genes):** size, speed, diet (plants to meat), armour, weapons, toxins, immunity, night vision,
+**Body (30 genes):** size, speed, diet (plants to meat), armour, weapons, toxins, immunity, night vision,
 vision range and field of view, colour and markings, thermal optimum, mutation rate and step size (evolvable
 evolvability), parental investment, maturity, longevity, litter size, sexual vs. asexual reproduction, and
 an internal clock, plus a preferred mate colour and choosiness that drive sexual selection.
@@ -95,7 +97,9 @@ so a plant-herbivore arms race can unfold. Overlay and journal entries report it
 Events panel > **Discoveries** is a journal of behaviours the simulation produced on its own. A detector watches each
 species and writes an entry when something clearly stands out: a call that is used in one context far more than
 elsewhere ("Call A when hurt"), listeners that bolt or freeze when they hear it, farming and poaching, species that
-learn, a lineage that changes fast, population crashes, cannibalism. Click an entry to fly there and highlight the
+learn, a lineage that changes fast, population crashes, cannibalism. An ongoing behaviour has to hold for 2000 ticks
+before it is written down, close relatives doing the same thing are reported once, and only the first three
+lineages to show a behaviour make the journal. Click an entry to fly there and highlight the
 species. **Export journal** writes it as Markdown to `~/Documents/Primordia/`. `--headless` prints the journal at the end.
 
 ## Rules of the world
@@ -109,7 +113,19 @@ species. **Export journal** writes it as Markdown to `~/Documents/Primordia/`. `
 - At night sight shrinks unless a creature has night vision; glowing (signalling) creatures stay visible.
 - Seasons are opposite in each hemisphere; poles freeze in winter and plants die back.
 - A lineage that drifts far enough genetically becomes a new species with a generated Latin name.
-- Creatures dehydrate (faster in heat); they drink at shores or get water from lush grass.
+- The sea is a habitat, not just an obstacle. Algae grows in water, thickest on the shallow coastal shelf. An
+  Aquatic gene trades legs for fins: sea bodies swim fast and cheaply, graze algae and never thirst in water, but are
+  slow, costly and quick to dry out on land. Founders are land animals, so amphibians and true sea animals have to evolve.
+- Three more body plans start near zero and have to evolve. Wings make a body faster and cheaper to move, carry it
+  over water and dodge bites from worse fliers, but cost upkeep and give heavy bodies little lift. Quills hurt
+  whoever bites. Photosynthetic skin earns energy from daylight while the creature is still and uncrowded, at the
+  cost of speed and plant digestion (and all meat digestion).
+- Bodies are drawn from their genes: legs on land animals, fins and a tail fluke on swimmers, wings, quills and
+  leaf lobes. Calls ripple outward (one colour per call) and teleports flash.
+- Evolution pace (Simulation > Evolution pace, or Settings > Evolution) sets ageing and mutation together: 2x to
+  5x gives shorter lives and more mutations, so new traits appear sooner. Headless: `--pace X`.
+- Creatures dehydrate (faster in heat); they drink at shores or get water from lush grass. Thin, dry grass carries
+  almost none and rain only slows thirst, so dry country means walking to water.
 - Optional glacial cycles swing the climate; cold periods lower the sea and open land bridges.
 - Pack hunting adds damage per extra attacker; prey in crowds are harder to single out.
 - Hawk-dove food contests (as in Primer's game-theory video): doves share a patch, hawks bully doves, two
@@ -122,7 +138,9 @@ species. **Export journal** writes it as Markdown to `~/Documents/Primordia/`. `
 ## Scenarios
 
 Primordial Soup, Natural Selection 101, Predator & Prey, Warning Colours, Epidemic, Island Hopping, Ice Age,
-Kin & Altruism, Cambrian Explosion, Single Origin, and Desert Pangaea. Pick one on the welcome screen or under World > Scenarios.
+Kin & Altruism, Cambrian Explosion, Single Origin, Desert Pangaea, Water World, and Menagerie (founders that already fly, bristle, sunbathe and swim). Pick one on the welcome screen or under World > Scenarios.
+Each scenario has a goal with a progress bar in its notes box (for example "Have 6 species alive at once" or "Keep
+hunters and grazers together until year 8"). Some goals can fail; rewind a year and try something different.
 
 ## Getting around
 
@@ -143,7 +161,8 @@ Inspector (live portrait, personal name, current activity, ancestry, family, wha
 energy/health/water history, genome vs. population average), Brain (what each eye sees, plus live network activity), Population (population with catastrophe
 markers, Lotka-Volterra phase portrait, species stack plot, diversity, environment, minds, behaviour, epidemic
 SIR curves, causes of death), Traits (Primer-style trait-distribution heatmaps over time, morphospace scatter,
-which senses brains rely on), Species (sortable table with trend sparklines, and a field-guide card with a trait radar; double-click a name
+which senses brains rely on), Species (a lineage leaderboard ranking every founding lineage and its descendants, with
+the ones you designed in the Genome Lab marked; sortable table with trend sparklines, and a field-guide card with a trait radar; double-click a name
 to rename it; highlighting a species draws its migration path on the map), Tree of Life
 (zoomable phylogeny with population-weighted branches), Events and Hall of Fame, Environment (live
 parameters), Tools (feed, spawn, clone, smite, meteor, terraform, infect), Genome Lab (design your own

@@ -37,6 +37,10 @@ const GeneInfo GENE_INFO_TABLE[] = {
     {"Plasticity", "Lifetime learning rate: brains rewire themselves toward whatever just paid off. Costs upkeep.", 0.4f},
     {"Neural link", "Couples this brain's hidden state to nearby kin, so neighbours partly think together. Costs upkeep.", 0.5f},
     {"Detox", "Tolerance of plant chemical defences. Costs upkeep; pays off where plants have evolved poisons.", 0.5f},
+    {"Aquatic", "Built for water: swims fast and cheaply, feeds on algae and never thirsts at sea, but is slow, hungry and quick to dry out on land.", 1.2f},
+    {"Wings", "Flight: faster, crosses water as if it were land and dodges bites from wingless attackers. Costly to carry and to flap; heavy bodies get little lift.", 1.2f},
+    {"Quills", "Spines that hurt whoever bites this creature. They cost upkeep and slow the body down.", 0.8f},
+    {"Photosynthesis", "Green skin that makes energy from daylight while the creature keeps still and uncrowded. Leafy bodies are slow and digest food badly.", 1.2f},
 };
 
 static_assert(std::size(GENE_INFO_TABLE) == G_COUNT, "one GeneInfo per gene");
@@ -103,6 +107,10 @@ Genome Genome::random(Rng& rng, float dietMax) {
     g[G_PLASTICITY] = rng.range(0.f, 0.4f);
     g[G_LINK] = rng.range(0.f, 0.2f);
     g[G_DETOX] = rng.range(0.f, 0.12f);
+    g[G_AQUATIC] = rng.range(0.f, 0.1f); // founders are land animals; the sea has to be conquered
+    g[G_WINGS] = rng.range(0.f, 0.08f);  // ...and so do the air, quills and green skin
+    g[G_SPIKES] = rng.range(0.f, 0.08f);
+    g[G_PHOTO] = rng.range(0.f, 0.08f);
 
     // Sparse random wiring; behaviours with real costs (attack, share, pheromone)
     // start disconnected and must be discovered by structural mutation.
@@ -435,6 +443,15 @@ Phenotype Phenotype::from(const Genome& gn, float specialization) {
         p.cStep = std::cos(step); p.sStep = std::sin(step);
     }
     p.detox = g[G_DETOX];
+    p.aquatic = g[G_AQUATIC];
+    p.wings = g[G_WINGS];
+    p.lift = p.wings * clampf(1.7f - rs, 0.15f, 1.f); // rs is 0.5 (tiny) .. 2 (huge)
+    p.spikes = g[G_SPIKES];
+    p.photo = g[G_PHOTO];
+    // Costs grow with the square of the gene, so a first step toward a new body is cheap and the last is dear.
+    p.accel *= (1.f + 0.4f * p.lift) * (1.f - 0.1f * p.spikes) * (1.f - 0.4f * p.photo * p.photo);
+    p.plantEff *= 1.f - 0.5f * p.photo * p.photo;
+    p.meatEff *= 1.f - p.photo;
     p.learnRate = 0.05f * g[G_PLASTICITY] * g[G_PLASTICITY] * 4.f; // quadratic: low plasticity is nearly free
     return p;
 }

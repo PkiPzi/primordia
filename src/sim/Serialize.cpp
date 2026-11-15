@@ -13,7 +13,7 @@ namespace pm {
 namespace {
 
 constexpr char MAGIC[8] = {'P', 'R', 'I', 'M', 'O', 'R', 'D', 'I'};
-constexpr uint32_t FORMAT_VERSION = 20;
+constexpr uint32_t FORMAT_VERSION = 22;
 
 static_assert(std::is_trivially_copyable_v<Creature>);
 static_assert(std::is_trivially_copyable_v<Corpse>);
@@ -363,8 +363,14 @@ bool World::loadStream(std::istream& in, std::string& err) {
     lastGeneYear_ = -1;
     recentPeak_ = 0.f;
     announced_.clear();
+    streaks_.clear();
+    // Same key discover() uses, so a reload or rewind does not announce the same behaviour twice. The bucket of
+    // yearly entries is the year they were logged in.
     for (const WorldEvent& e : events.items)
-        if (e.kind == EventKind::Discovery) announced_.insert((uint64_t(e.speciesId) << 32) | e.tag);
+        if (e.kind == EventKind::Discovery) {
+            announced_.insert(discoveryKey(e.tag, e.speciesId, 0));
+            announced_.insert(discoveryKey(e.tag, e.speciesId, uint32_t(e.tick / std::max(1, params.yearLength)) + 1));
+        }
     fx.clear();
     lastSpecialization_ = params.specialization;
     cgrid_.resize(terrain.width, terrain.height, 64.f);

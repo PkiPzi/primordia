@@ -445,6 +445,25 @@ void Ui::draw(AppState& app, float dt) {
     }
     drawHoverTooltip(app);
     drawToasts(app, dt);
+    if (app.currentScenario >= 0 && app.currentScenario < scenarioCount() && !showWelcome) {
+        // Objective: re-evaluated a few times a second (it walks the statistics history).
+        World& gw = *app.world;
+        goalTimer_ -= dt;
+        if (goalTimer_ <= 0.f || gw.tickCount < goalTick_) {
+            goalTimer_ = 0.4f;
+            goalTick_ = gw.tickCount;
+            goalProgress_ = objective(app.currentScenario).progress(gw);
+            goalDone_ = false;
+            for (const WorldEvent& e : gw.events.items)
+                if (e.kind == EventKind::Milestone && e.text.rfind("Objective complete", 0) == 0) goalDone_ = true;
+            if (goalProgress_ >= 1.f && !goalDone_) {
+                goalDone_ = true;
+                gw.events.push({gw.tickCount, EventKind::Milestone, 0, {},
+                                std::string("Objective complete: ") + objective(app.currentScenario).goal});
+                app.notify(std::string("Objective complete: ") + scenario(app.currentScenario).name);
+            }
+        }
+    }
     if (app.currentScenario >= 0 && app.currentScenario < scenarioCount() && app.showNotes && !showWelcome) {
         const Scenario& sc = scenario(app.currentScenario);
         ImGuiViewport* vp3 = ImGui::GetMainViewport();
@@ -462,6 +481,17 @@ void Ui::draw(AppState& app, float dt) {
             ImGui::PushStyleColor(ImGuiCol_Text, C_MUTED);
             ImGui::TextWrapped("%s", sc.watch);
             ImGui::PopStyleColor();
+            ImGui::Separator();
+            ImGui::TextWrapped(ICON_BULLSEYE "  Goal: %s", objective(app.currentScenario).goal);
+            if (goalDone_) {
+                ImGui::TextColored(C_GREEN, "Achieved. Keep going, or pick another scenario.");
+            } else if (goalProgress_ < 0.f) {
+                ImGui::TextColored(C_RED, "Failed. Rewind a year and try something different.");
+            } else {
+                char pct[16];
+                std::snprintf(pct, sizeof pct, "%.0f%%", 100.f * std::min(goalProgress_, 0.99f));
+                ImGui::ProgressBar(clamp01(goalProgress_), ImVec2(-1, 0), pct);
+            }
         }
         ImGui::End();
         ImGui::PopStyleVar();
@@ -560,6 +590,14 @@ void Ui::drawMenuBar(AppState& app) {
                 app.speed = i;
                 app.paused = false;
             }
+        }
+        if (ImGui::BeginMenu("Evolution pace")) {
+            static const char* names[] = {"Normal", "Fast (2x)", "Faster (3x)", "Frantic (5x)"};
+            static const float pace[] = {1.f, 2.f, 3.f, 5.f};
+            SimParams& sp = app.world->params;
+            for (int k = 0; k < 4; ++k)
+                if (ImGui::MenuItem(names[k], nullptr, sp.lifePace == pace[k] && sp.mutationRate == pace[k])) sp.lifePace = sp.mutationRate = pace[k];
+            ImGui::EndMenu();
         }
         ImGui::EndMenu();
     }
@@ -825,6 +863,70 @@ void Ui::drawInspector(AppState& app) {
         if (ImGui::Button(ICON_USERS " Most children")) pickBy([](const Creature& c) { return float(c.children); });
         ImGui::SameLine();
         if (ImGui::Button(ICON_EXPAND " Biggest")) pickBy([](const Creature& c) { return c.radius; });
+
+        // World at a glance: something to read (and click) before any creature is selected.
+        ImGui::SeparatorText("World at a glance");
+        const Species* top = nullptr;
+        int hunters = 0;
+        for (const Species& s : w.species.all())
+            if (s.alive()) {
+                if (!top || s.population > top->population) top = &s;
+                hunters += s.meanGenes[G_DIET] > 0.6f;
+            }
+        ImGui::Text("Year %.1f  ·  %zu creatures  ·  %d species (%d hunting)", w.year(), w.creatures.size(),
+                    w.species.aliveCount(), hunters);
+        if (top) {
+            ImGui::TextColored(C_MUTED, "Dominant");
+            ImGui::SameLine();
+            swatch(top->color);
+            ImGui::SameLine();
+            if (ImGui::SmallButton(top->name().c_str())) {
+                app.rs->highlightSpecies = top->id;
+                app.cam->targetCenter = top->centroid;
+                app.follow = false;
+            }
+            ImGui::PushStyleColor(ImGuiCol_Text, C_MUTED);
+            ImGui::TextWrapped("%d%% of all creatures. Best at: %s",
+                               int(100 * top->population / int(std::max<size_t>(1, w.creatures.size()))),
+                               w.bestAtText(top->id).c_str());
+            ImGui::PopStyleColor();
+        }
+        if (app.currentScenario >= 0 && app.currentScenario < scenarioCount()) {
+            ImGui::Spacing();
+            ImGui::TextWrapped(ICON_BULLSEYE "  Goal: %s", objective(app.currentScenario).goal);
+            if (goalDone_) ImGui::TextColored(C_GREEN, "Achieved");
+            else if (goalProgress_ < 0.f) ImGui::TextColored(C_RED, "Failed. Rewind a year and try something different.");
+            else ImGui::ProgressBar(clamp01(goalProgress_), ImVec2(-1, 0));
+        }
+        const WorldEvent* lastDiscovery = nullptr;
+        const WorldEvent* lastNews = nullptr;
+        for (auto it = w.events.items.rbegin(); it != w.events.items.rend() && !(lastDiscovery && lastNews); ++it) {
+            if (!lastDiscovery && it->kind == EventKind::Discovery) lastDiscovery = &*it;
+            if (!lastNews && (it->kind == EventKind::Extinction || it->kind == EventKind::Catastrophe ||
+                              (it->kind == EventKind::Speciation && it->tick > 0)))
+                lastNews = &*it;
+        }
+        auto eventLine = [&](const char* heading, const WorldEvent* e, const char* none) {
+            ImGui::Spacing();
+            ImGui::TextColored(C_MUTED, "%s", heading);
+            if (!e) {
+                ImGui::TextWrapped("%s", none);
+                return;
+            }
+            ImGui::PushID(e);
+            ImGui::PushStyleColor(ImGuiCol_Text, eventColor(e->kind));
+            ImGui::TextWrapped("Year %.2f: %s", double(e->tick) / w.params.yearLength, e->text.c_str());
+            if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            if (ImGui::IsItemClicked()) {
+                if (e->pos.x != 0.f || e->pos.y != 0.f) app.cam->targetCenter = e->pos;
+                if (e->speciesId && w.species.valid(e->speciesId)) app.rs->highlightSpecies = e->speciesId;
+                app.follow = false;
+            }
+            ImGui::PopStyleColor();
+            ImGui::PopID();
+        };
+        eventLine("Latest discovery", lastDiscovery, "Nothing yet. Behaviours appear here once they have held for a while.");
+        eventLine("Latest news", lastNews, "No species has appeared or vanished yet.");
         ImGui::End();
         return;
     }
@@ -1338,6 +1440,18 @@ void Ui::drawPopulation(AppState& app) {
         }
         ImPlot::PlotLine(label, &S[0].tick, ys, n, s);
     };
+    // Branch comparison: after a rewind, the abandoned timeline stays on the charts as a fainter line.
+    auto ghostAxis = [&]() { // show where the old branch went, even past the present
+        if (!app.ghost.empty() && historyWindow_ == 0)
+            ImPlot::SetupAxisLimits(ImAxis_X1, tStart, std::max(tEnd, double(app.ghost.back().tick)), ImPlotCond_Always);
+    };
+    auto ghostLine = [&](const char* label, float StatSample::*field, ImVec4 col) {
+        if (app.ghost.empty()) return;
+        ImPlotSpec gs = spec;
+        gs.LineColor = col;
+        gs.LineWeight = 1.6f;
+        ImPlot::PlotLine(label, &app.ghost[0].tick, &(app.ghost[0].*field), int(app.ghost.size()), gs);
+    };
     if (ImGui::BeginTabBar("##poptabs")) {
         if (tabItem(ICON_GAUGE " Overview")) {
             // At-a-glance tiles: value, trend sparkline over the selected window.
@@ -1404,9 +1518,23 @@ void Ui::drawPopulation(AppState& app) {
             ImGui::EndTabItem();
         }
         if (tabItem("Population")) {
+            // Branch comparison: after a rewind, the abandoned timeline stays on the chart as a grey line.
+            const auto& G = app.ghost;
+            if (!G.empty()) {
+                size_t gi = 0;
+                while (gi + 1 < G.size() && G[gi].tick < tEnd) ++gi;
+                ImGui::TextColored(C_MUTED, "Previous branch at this moment: %.0f creatures, %.0f species, %.0f hunters.  Now: %.0f, %.0f, %.0f.",
+                                   G[gi].population, G[gi].species, G[gi].carnivores, S.back().population, S.back().species,
+                                   S.back().carnivores);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Forget previous branch")) app.ghost.clear();
+            }
             if (ImPlot::BeginPlot("##pop", ImVec2(-1, -1), ImPlotFlags_NoTitle)) {
                 setupX();
+                ghostAxis();
                 ImPlot::SetupLegend(ImPlotLocation_NorthWest);
+                ghostLine("Total (previous branch)", &StatSample::population, C_MUTED);
+                ghostLine("Carnivores (previous branch)", &StatSample::carnivores, ImVec4(C_RED.x, C_RED.y, C_RED.z, 0.45f));
                 line("Total", &S[0].population, C_TEXT, 2.2f, true);
                 line("Herbivores", &S[0].herbivores, C_GREEN);
                 line("Omnivores", &S[0].omnivores, C_AMBER);
@@ -1525,7 +1653,9 @@ void Ui::drawPopulation(AppState& app) {
         if (tabItem("Diversity")) {
             if (ImPlot::BeginPlot("##div", ImVec2(-1, -1), ImPlotFlags_NoTitle)) {
                 setupX();
+                ghostAxis();
                 ImPlot::SetupLegend(ImPlotLocation_NorthWest);
+                ghostLine("Living species (previous branch)", &StatSample::species, C_MUTED);
                 line("Living species", &S[0].species, C_ACCENT, 2.f, true);
                 line("Births / sample", &S[0].births, ImVec4(0.6f, 0.9f, 0.6f, 0.8f), 1.f);
                 line("Deaths / sample", &S[0].deaths, ImVec4(0.9f, 0.5f, 0.5f, 0.8f), 1.f);
@@ -1850,6 +1980,48 @@ void Ui::drawSpecies(AppState& app) {
     ImGui::PopStyleColor();
     ImGui::SameLine();
     ImGui::Checkbox("Show extinct", &showExtinct_);
+    // Leaderboard of founding lineages: how the creatures you designed are doing against the wild ones.
+    // Opens by itself the first time one of your own designs is in the world.
+    bool anyDesigned = false;
+    for (const WorldEvent& e : w.events.items)
+        if (e.kind == EventKind::Speciation && e.text.rfind("Designed lineage", 0) == 0) { anyDesigned = true; break; }
+    if (anyDesigned) ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
+    if (ImGui::CollapsingHeader(ICON_STAR "  Lineage leaderboard")) {
+        const float total = float(std::max<size_t>(1, w.creatures.size()));
+        if (ImGui::BeginTable("##lineages", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 26.f);
+            ImGui::TableSetupColumn("Founding lineage");
+            ImGui::TableSetupColumn("Creatures");
+            ImGui::TableSetupColumn("Share");
+            ImGui::TableSetupColumn("Species (ever)");
+            ImGui::TableHeadersRow();
+            int rank = 0;
+            for (const LineageScore& ls : w.lineageScores()) {
+                if (!ls.population && !ls.designed) continue; // extinct wild lineages are in the table below
+                const Species& root = w.species.get(ls.root);
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::Text("%d", ++rank);
+                ImGui::TableNextColumn();
+                ImGui::PushID(int(ls.root));
+                ImGui::PushStyleColor(ImGuiCol_Text, ls.population ? v4(root.color) : C_MUTED);
+                const std::string label = (ls.designed ? std::string(ICON_FLASK " ") : std::string()) + root.name();
+                if (ImGui::Selectable(label.c_str(), app.rs->highlightSpecies == ls.root, ImGuiSelectableFlags_SpanAllColumns))
+                    app.rs->highlightSpecies = ls.root;
+                ImGui::PopStyleColor();
+                if (ls.designed && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("You designed this lineage in the Genome Lab");
+                ImGui::PopID();
+                ImGui::TableNextColumn();
+                if (ls.population) ImGui::Text("%d", ls.population);
+                else ImGui::TextColored(C_MUTED, "extinct");
+                ImGui::TableNextColumn();
+                ImGui::Text("%.1f%%", 100.f * float(ls.population) / total);
+                ImGui::TableNextColumn();
+                ImGui::Text("%d (%d)", ls.livingSpecies, ls.speciesEver);
+            }
+            ImGui::EndTable();
+        }
+    }
     if (app.rs->highlightSpecies && w.species.valid(app.rs->highlightSpecies)) {
         const Species& hs = w.species.get(app.rs->highlightSpecies);
         ImGui::PushStyleColor(ImGuiCol_ChildBg, C_PANEL);
@@ -1967,7 +2139,7 @@ void Ui::drawSpecies(AppState& app) {
         ImGui::PopStyleColor();
     }
     ImGuiTableFlags tf = ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Sortable |
-                         ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_BordersInnerV;
+                         ImGuiTableFlags_Hideable | ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_BordersInnerV;
     if (ImGui::BeginTable("##species", 7, tf)) {
         ImGui::TableSetupScrollFreeze(0, 1);
         const float numW = ImGui::CalcTextSize("00000").x;
@@ -2321,7 +2493,7 @@ void Ui::drawEvents(AppState& app) {
         if (count == 0) {
             ImGui::PushStyleColor(ImGuiCol_Text, C_MUTED);
             ImGui::TextWrapped("Nothing yet. Let it run: alarm calls, farming, learning and fast evolution show up here "
-                               "the moment the detector sees them. Fast-forward helps.");
+                               "once the detector has seen them hold for a while. Fast-forward helps.");
             ImGui::PopStyleColor();
         }
         const auto& items = w.events.items;
@@ -2526,6 +2698,20 @@ void Ui::drawEnvironment(AppState& app) {
         ImGui::SliderFloat("Cold & heat", &p.thermalCost, 0.f, 4.f, "%.2fx");
     }
     if (ImGui::CollapsingHeader(ICON_FLASK "  Evolution", ImGuiTreeNodeFlags_DefaultOpen)) {
+        {
+            // One knob for "show me evolution sooner": shorter lives (faster generations) and more mutations.
+            static const char* names[] = {"Normal", "Fast", "Faster", "Frantic"};
+            static const float pace[] = {1.f, 2.f, 3.f, 5.f};
+            ImGui::TextUnformatted("Evolution pace");
+            for (int k = 0; k < 4; ++k) {
+                ImGui::SameLine();
+                if (ImGui::RadioButton(names[k], p.lifePace == pace[k] && p.mutationRate == pace[k])) p.lifePace = p.mutationRate = pace[k];
+            }
+            help("Sets ageing and mutation together. Faster paces give shorter lives, quicker generations and more "
+                 "mutations, so new traits show up sooner. Seasons and days keep their length.");
+        }
+        ImGui::SliderFloat("Ageing", &p.lifePace, 0.5f, 5.f, "%.2fx");
+        help("How fast creatures grow up and grow old");
         ImGui::SliderFloat("Mutation", &p.mutationRate, 0.f, 5.f, "%.2fx");
         help("Multiplies every creature's own (evolvable) mutation rate");
         ImGui::SliderFloat("Species gap", &p.speciesThreshold, 0.2f, 1.5f, "%.2f");
@@ -2598,9 +2784,13 @@ void Ui::drawTools(AppState& app) {
         if (t % 3) ImGui::SameLine();
         static const char* shortNames[] = {"Select", "Feed", "Spawn", "Clone", "Smite", "Meteor", "Raise", "Lower", "Infect"};
         char label[64];
-        if (bw < 74.f) std::snprintf(label, sizeof label, "%s##tool%d", icons[t], t); // icons only when narrow
-        else std::snprintf(label, sizeof label, "%s %s##tool%d", icons[t], shortNames[t], t);
-        if (iconButton(label, tips[t], app.tool == Tool(t), ImVec2(bw, ImGui::GetFrameHeight() * 1.4f)))
+        std::snprintf(label, sizeof label, "%s %s", icons[t], shortNames[t]);
+        // Icons only when the longest label ("Meteor") would not fit; measured, so it follows the interface scale.
+        const bool fits = ImGui::CalcTextSize(ICON_FIRE " Meteor").x + ImGui::GetStyle().FramePadding.x * 2 <= bw;
+        // Too narrow for one line: stack the icon over the name instead of dropping the name.
+        if (fits) std::snprintf(label, sizeof label, "%s %s##tool%d", icons[t], shortNames[t], t);
+        else std::snprintf(label, sizeof label, "  %s\n%s##tool%d", icons[t], shortNames[t], t);
+        if (iconButton(label, tips[t], app.tool == Tool(t), ImVec2(bw, ImGui::GetFrameHeight() * (fits ? 1.4f : 2.1f))))
             app.tool = Tool(t);
     }
     ImGui::PushStyleColor(ImGuiCol_Text, C_AMBER);
@@ -3471,9 +3661,19 @@ void Ui::drawToasts(AppState& app, float dt) {
                     if (e.pos.x != 0.f || e.pos.y != 0.f) app.cam->targetCenter = e.pos;
                 }
             }
-            const WorldEvent& e = w.events.items.back();
-            if (!app.paused && (e.kind == EventKind::Catastrophe || e.kind == EventKind::Milestone || e.kind == EventKind::Discovery))
-                app.notify(e.kind == EventKind::Discovery ? std::string(ICON_EYE " Discovery: ") + e.text : e.text);
+            // A discovery anywhere in the batch wins over whatever happened to come last.
+            const WorldEvent* e = &w.events.items.back();
+            for (size_t k = w.events.items.size() - fresh; k < w.events.items.size(); ++k)
+                if (w.events.items[k].kind == EventKind::Discovery) e = &w.events.items[k];
+            if (!app.paused && e->kind == EventKind::Discovery) {
+                app.notify(std::string(ICON_EYE " Discovery: ") + e->text);
+                app.toastTime = 7.f; // long enough to read and click
+                app.toastPos = e->pos;
+                app.toastSpecies = e->speciesId;
+                app.toastClickable = true;
+            } else if (!app.paused && (e->kind == EventKind::Catastrophe || e->kind == EventKind::Milestone)) {
+                app.notify(e->text);
+            }
         }
         lastEventCount_ = w.events.counter;
     }
@@ -3489,9 +3689,23 @@ void Ui::drawToasts(AppState& app, float dt) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18, 10));
     ImGui::Begin("##toast", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
-                     ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs |
-                     ImGuiWindowFlags_NoDocking);
+                     ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDocking |
+                     (app.toastClickable ? 0 : ImGuiWindowFlags_NoInputs));
     ImGui::TextUnformatted(app.toast.c_str());
+    if (app.toastClickable) {
+        ImGui::SameLine();
+        ImGui::TextColored(C_MUTED, "  click to go there");
+        if (ImGui::IsWindowHovered()) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            app.toastTime = std::max(app.toastTime, 1.f); // do not fade out from under the pointer
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                if (app.toastPos.x != 0.f || app.toastPos.y != 0.f) app.cam->targetCenter = app.toastPos;
+                if (app.toastSpecies && w.species.valid(app.toastSpecies)) app.rs->highlightSpecies = app.toastSpecies;
+                app.follow = false;
+                app.toastTime = 0.f;
+            }
+        }
+    }
     ImGui::End();
     ImGui::PopStyleVar(3);
 }
