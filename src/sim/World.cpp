@@ -287,6 +287,8 @@ Vec2 World::randomLand(Rng& r, float minFertility) const {
     return {terrain.width * 0.5f, terrain.height * 0.5f};
 }
 
+static constexpr float BODY_ENERGY = 40.f; // energy per unit of body mass: paid when growing, returned by the carcass
+
 void World::updateBody(Creature& c) const {
     const Phenotype& p = c.ph;
     c.radius = p.adultRadius * (0.45f + 0.55f * c.growth);
@@ -488,7 +490,7 @@ void World::tick() {
         for (const Creature& c : creatures) hunters += c.ph.diet > 0.6f;
         if (hunters >= 3) noPredatorsSince_ = -1;
         else if (noPredatorsSince_ < 0) noPredatorsSince_ = tickCount;
-        else if (tickCount - noPredatorsSince_ > params.yearLength / 2 && creatures.size() > 200) {
+        else if (tickCount - noPredatorsSince_ > params.yearLength / 4 && creatures.size() > 200) {
             Vec2 at = randomLand(rng_, 0.4f);
             int k = spawnPredators(at, 30, 350.f);
             log(EventKind::Catastrophe, 0, at, std::to_string(k) + " hunters migrate in from beyond the map");
@@ -890,6 +892,7 @@ void World::interactOne(int i, TileCtx& tc) {
             bite *= 1.f - 0.5f * harm;
             // Algae needs a body built for water, grass one built for land.
             bite *= terrain.water[size_t(terrain.index(mouth.x, mouth.y))] ? 0.2f + 0.8f * p.aquatic : 1.f - 0.6f * p.aquatic;
+            bite *= 1.f - 0.4f * p.lift; // a body built to stay airborne grazes clumsily
             // Hawk-dove food contest with whoever already grazed this patch this tick.
             if (params.foodContests && bite > 0.f) {
                 const size_t cell = size_t(terrain.index(mouth.x, mouth.y));
@@ -994,6 +997,13 @@ void World::interactOne(int i, TileCtx& tc) {
             Vec2 d = t.pos - c.pos;
             float gap = d.length() - c.radius - t.radius;
             if (gap > 4.f) return;
+            // Kin restraint: the same or a sister species is never prey. Without it hunters mostly died by each
+            // other's teeth (7 in 10 hunter deaths, chiefly their own young) and never built up alongside prey.
+            if (t.speciesId != c.speciesId) {
+                const Species& sa = species.get(c.speciesId);
+                const Species& sb = species.get(t.speciesId);
+                if (sa.parentId == t.speciesId || sb.parentId == c.speciesId || (sa.parentId && sa.parentId == sb.parentId)) return;
+            } else return;
             float a = wrapAngle(fastAtan2(d.y, d.x) - c.angle);
             if (std::fabs(a) > 0.8f) return;
             if (gap < bestGap) { bestGap = gap; target = j; }
@@ -1007,8 +1017,9 @@ void World::interactOne(int i, TileCtx& tc) {
             // harder to single out.
             const float pack = 1.f + 0.25f * float(std::min<uint8_t>(t.hitsThisTick, 3));
             const float herd = 1.f - 0.35f * t.in[IN_CROWD];
-            float dmg = p.damage * strength * sizeEdge * pack * herd * (1.f - 0.75f * t.ph.armor) *
-                        (1.f - 0.7f * std::max(0.f, t.ph.lift - p.lift)); // fliers dodge anything that flies worse
+            float dmg = p.damage * strength * sizeEdge * pack * herd *  (1.f - 0.75f * t.ph.armor) *
+                        (1.f - 0.5f * std::max(0.f, t.ph.lift - p.lift)) * // fliers dodge anything that flies worse
+                        clampf(5.f * (1.f - c.energy / c.maxEnergy), 0.3f, 1.f); // a full belly bites half-heartedly, so hunters do not strip their prey
             if (t.hitsThisTick > 0) ++tc.attacksPack;
             if (t.hitsThisTick < 255) ++t.hitsThisTick;
             t.health -= dmg;
@@ -1038,6 +1049,10 @@ void World::interactOne(int i, TileCtx& tc) {
             if (t.health <= 0.f && t.alive) {
                 kill(t, DeathCause::Predation);
                 ++c.kills;
+                // The killer eats first: part of the carcass goes straight to it (taken out of the corpse below).
+                const float feast = std::min(c.maxEnergy - c.energy, 0.8f * BODY_ENERGY * t.mass * t.growth * p.meatEff);
+                c.energy += feast;
+                t.energy -= feast;
             }
             if (c.health <= 0.f) kill(c, DeathCause::Poison);
         }
@@ -1319,10 +1334,10 @@ void World::moveAndMetabolize(int i) {
 
     // Metabolism (Kleiber scaling for basal cost).
     const float m = c.mass;
-    const float basal = 0.010f * c.mass075 * (1.f + 0.5f * p.longevity);
+    const float basal = 0.010f * c.mass075 * (1.f + 0.5f * p.longevity) * (1.f - 0.3f * p.carn); // meat eaters idle cheaply between kills
     const float toxin = 0.008f * c.mass075 * p.toxin * params.toxinCost;
     const float move = 0.030f * c.mass075 * thrust * thrust * (0.6f + 0.8f * c.genome.g[G_SPEED]) *
-                       lerp(inWater ? lerp(2.f, 0.8f, p.aquatic) : lerp(1.f, 2.2f, p.aquatic), 0.9f, p.lift) * // gliding is cheap travel
+                       lerp(inWater ? lerp(2.f, 0.8f, p.aquatic) : lerp(1.f, 2.2f, p.aquatic), 1.5f, p.lift) * // flapping is hard work
                        params.moveCost;
     const float turnCost = 0.004f * m * turn * turn * params.moveCost;
     const float organScale = 0.4f + 0.6f * c.mass075; // eyes and brains scale sub-linearly with body
@@ -1341,12 +1356,12 @@ void World::moveAndMetabolize(int i) {
                         (c.out[OUT_OVERCLOCK] > 0.5f ? 0.004f * c.mass075 + 0.00003f * float(p.connections) : 0.f) +
                         (phased ? 0.006f * c.mass075 : 0.f);
     const float immuneCost = 0.004f * c.mass075 * p.immunity + 0.003f * c.mass075 * p.nightVision +
-                             c.mass075 * (0.004f * p.wings + 0.002f * p.spikes);
-    // Photosynthesis: income scales with skin area (so small bodies gain most), daylight, keeping still, and not
-    // being shaded by neighbours. Murky water halves it.
+                             c.mass075 * (0.006f * p.wings + 0.002f * p.spikes);
+    // Photosynthesis: a steady income by day, enough for a fully green body standing still in the open to live on.
+    // Moving and neighbours' shade cut it, and murky water takes a third.
     if (p.photo > 0.02f)
-        c.energy = std::min(c.maxEnergy, c.energy + 0.08f * std::sqrt(m) * p.photo * c.in[IN_LIGHT] * (1.f - 0.4f * std::fabs(thrust)) *
-                                                        sq(1.f - 0.7f * c.in[IN_CROWD]) * (inWater ? 0.5f : 1.f));
+        c.energy = std::min(c.maxEnergy, c.energy + 0.07f * c.mass075 * p.photo * c.in[IN_LIGHT] * (1.f - 0.4f * std::fabs(thrust)) *
+                                                        (1.f - 0.5f * c.in[IN_CROWD]) * (inWater ? 0.7f : 1.f));
     float disease = 0.f;
     if (c.infection > 0.f) {
         const float harm = params.virulence * (0.3f + 2.f * c.strain * c.strain);
@@ -1372,7 +1387,7 @@ void World::moveAndMetabolize(int i) {
                 params.metabolism;
 
     if (c.energy <= 0.f) {
-        c.health += c.energy * 3.f;
+        c.health += c.energy * 3.f * (1.f - 0.75f * p.carn); // meat eaters are built to fast, so a prey shortage thins them instead of wiping them out
         c.energy = 0.f;
         if (c.health <= 0.f) kill(c, DeathCause::Starvation);
     } else if (c.health < c.maxHealth && c.energy > 0.15f * c.maxEnergy && c.infection <= 0.f) {
@@ -1410,9 +1425,9 @@ void World::moveAndMetabolize(int i) {
         const float m0 = c.mass;
         c.growth = std::min(1.f, c.growth + params.lifePace / p.maturity);
         updateBody(c);
-        // Hurried growth is paid for. A carcass is worth 70 per unit of mass, so bodies grown faster than normal
-        // for free would be free meat (at pace 3 that fed a runaway of 12,000 cannibals with no grazers left).
-        c.energy -= 70.f * (c.mass - m0) * (1.f - 1.f / std::max(1.f, params.lifePace));
+        // Flesh is paid for at the price a carcass returns (BODY_ENERGY per unit of mass). When growth was free,
+        // hunters could live on each other's young and took over whole worlds with no grazers left.
+        c.energy -= BODY_ENERGY * (c.mass - m0);
     }
     c.clockPhase += p.clockFreq;
     if (c.clockPhase > TAU) c.clockPhase -= TAU;
@@ -1435,7 +1450,9 @@ void World::resolveDeathsAndBirths() {
         if (c.cause != DeathCause::Smite) {
             Corpse m;
             m.pos = c.pos;
-            m.energy = m.initial = 70.f * c.mass + 0.6f * std::max(0.f, c.energy);
+            // Only flesh grown since birth counts (the newborn body was never paid for). Negative energy is the killer's share.
+            const float born = c.mass * sq(0.45f / (0.45f + 0.55f * c.growth));
+            m.energy = m.initial = std::max(1.f, BODY_ENERGY * (c.mass - born) + (c.energy > 0.f ? 0.8f * c.energy : c.energy));
             m.radius = 3.f + std::sqrt(m.energy) * 0.7f;
             m.hue = c.genome.g[G_HUE];
             m.toxin = c.ph.toxin;
@@ -1845,6 +1862,12 @@ std::vector<LineageScore> World::lineageScores() const {
                 if (ls.root == e.speciesId) ls.designed = true;
     std::stable_sort(out.begin(), out.end(), [](const LineageScore& a, const LineageScore& b) { return a.population > b.population; });
     return out;
+}
+
+Vec2 World::releaseDesign(const Genome& g, int count) {
+    const Vec2 at = randomLand(rng_, 0.3f);
+    spawnGenome(g, 0, at, count, 120.f);
+    return at;
 }
 
 int World::spawnGenome(const Genome& g, uint32_t speciesHint, Vec2 at, int count, float radius) {

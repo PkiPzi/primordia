@@ -358,6 +358,7 @@ void Ui::draw(AppState& app, float dt) {
 
     for (const std::string& f : focusRequests) {
         if (f == "Genome Lab") showLab_ = true;
+        if (f == "World report") showReport_ = true;
         if (f == "Preferences") showPrefs_ = true;
         if (f == "Performance") showPerformance_ = true;
         if (f == "Primer Lab") showPrimer_ = true;
@@ -385,6 +386,7 @@ void Ui::draw(AppState& app, float dt) {
     if (showHelp_) drawHelp(app);
     if (showEncyclopedia_) drawEncyclopedia(app);
     if (showLab_) drawGenomeLab(app);
+    if (showReport_) drawReport(app);
     if (showPrefs_) drawPreferences(app);
     if (showPrimer_) primerLab_.draw(&showPrimer_, dt, fontTitle_);
     ImGui::GetStyle().FontScaleMain = app.uiScale;
@@ -461,7 +463,9 @@ void Ui::draw(AppState& app, float dt) {
                 gw.events.push({gw.tickCount, EventKind::Milestone, 0, {},
                                 std::string("Objective complete: ") + objective(app.currentScenario).goal});
                 app.notify(std::string("Objective complete: ") + scenario(app.currentScenario).name);
+                showReport_ = true;
             }
+            if (goalDone_) app.challengesDone |= 1 << app.currentScenario;
         }
     }
     if (app.currentScenario >= 0 && app.currentScenario < scenarioCount() && app.showNotes && !showWelcome) {
@@ -526,10 +530,14 @@ void Ui::drawMenuBar(AppState& app) {
     if (ImGui::BeginMenu("World")) {
         if (ImGui::MenuItem(ICON_NEW "  New world...", "Ctrl+N")) openNewWorld = true;
         if (ImGui::BeginMenu(ICON_FLASK "  Scenarios")) {
+            int met = 0;
+            for (int i = 0; i < scenarioCount(); ++i) met += (app.challengesDone >> i) & 1;
+            ImGui::TextDisabled(ICON_TROPHY "  Challenges: %d of %d goals met", met, scenarioCount());
+            ImGui::Separator();
             for (int i = 0; i < scenarioCount(); ++i) {
                 const Scenario& sc = scenario(i);
                 char label[128];
-                std::snprintf(label, sizeof label, "%s  %s", sc.icon, sc.name);
+                std::snprintf(label, sizeof label, "%s  %s%s", sc.icon, sc.name, (app.challengesDone >> i) & 1 ? "  " ICON_CHECK : "");
                 if (ImGui::MenuItem(label, sc.tagline)) {
                     app.newParams = SimParams{};
                     sc.setup(app.newWorld, app.newParams);
@@ -634,6 +642,7 @@ void Ui::drawMenuBar(AppState& app) {
         ImGui::MenuItem("Events", nullptr, &showEvents_);
         ImGui::MenuItem("Performance", nullptr, &showPerformance_);
         ImGui::MenuItem("Genome Lab", nullptr, &showLab_);
+        ImGui::MenuItem("World report", nullptr, &showReport_);
         ImGui::MenuItem("Primer Lab (speed, size, sense)", nullptr, &showPrimer_);
         ImGui::Separator();
         if (ImGui::BeginMenu("Colour creatures by")) {
@@ -3086,6 +3095,58 @@ void Ui::drawEncyclopedia(AppState&) {
     ImGui::End();
 }
 
+// A results card: the state of the world in a dozen lines, ready to copy and share.
+static std::string worldReport(const World& w, int scenarioIdx, int challengesDone) {
+    char b[320];
+    std::string out;
+    auto line = [&](const char* fmt, auto... a) { std::snprintf(b, sizeof b, fmt, a...); out += b; out += '\n'; };
+    const double n = double(std::max<size_t>(1, w.creatures.size()));
+    int hunters = 0, fliers = 0, quilled = 0, sunfed = 0, marine = 0;
+    for (const Creature& c : w.creatures) {
+        hunters += c.ph.diet > 0.66f;
+        fliers += c.genome.g[G_WINGS] > 0.5f;
+        quilled += c.genome.g[G_SPIKES] > 0.5f;
+        sunfed += c.genome.g[G_PHOTO] > 0.5f;
+        marine += c.genome.g[G_AQUATIC] > 0.7f;
+    }
+    int discoveries = 0;
+    const WorldEvent* last = nullptr;
+    for (const WorldEvent& e : w.events.items)
+        if (e.kind == EventKind::Discovery) { ++discoveries; last = &e; }
+    const bool sc = scenarioIdx >= 0 && scenarioIdx < scenarioCount();
+    line("PRIMORDIA  ·  %s  ·  seed %llu", sc ? scenario(scenarioIdx).name : "Custom world", (unsigned long long)w.settings.seed);
+    line("Year %.1f: %zu creatures in %d living species (%zu ever)", w.year(), w.creatures.size(), w.species.aliveCount(),
+         w.species.all().size());
+    line("Hunters %.0f%%  ·  fliers %.0f%%  ·  quilled %.0f%%  ·  sun-fed %.0f%%  ·  sea animals %.0f%%", 100 * hunters / n,
+         100 * fliers / n, 100 * quilled / n, 100 * sunfed / n, 100 * marine / n);
+    int rank = 0;
+    for (const LineageScore& ls : w.lineageScores()) {
+        if (!ls.population || rank >= 3) break;
+        line("%d. %s%s: %d alive (%.0f%%), %d living species", ++rank, w.species.get(ls.root).name().c_str(),
+             ls.designed ? " [designed]" : "", ls.population, 100 * ls.population / n, ls.livingSpecies);
+    }
+    line("Discoveries: %d%s%s", discoveries, last ? ". Latest: " : "", last ? last->text.c_str() : "");
+    if (sc) {
+        const float p = objective(scenarioIdx).progress(w);
+        line("Goal: %s", objective(scenarioIdx).goal);
+        line("Result: %s", p >= 1.f || ((challengesDone >> scenarioIdx) & 1) ? "achieved" : p < 0.f ? "failed" : "in progress");
+    }
+    return out;
+}
+
+void Ui::drawReport(AppState& app) {
+    ImGui::SetNextWindowSize(ImVec2(620, 0), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin(ICON_TROPHY " World report", &showReport_)) {
+        const std::string text = worldReport(*app.world, app.currentScenario, app.challengesDone);
+        ImGui::TextWrapped("%s", text.c_str());
+        if (ImGui::Button(ICON_COPY " Copy")) {
+            SDL_SetClipboardText(text.c_str());
+            app.notify("World report copied to the clipboard");
+        }
+    }
+    ImGui::End();
+}
+
 void Ui::drawGenomeLab(AppState& app) {
     World& w = *app.world;
     ImGui::SetNextWindowSize(ImVec2(560, 720), ImGuiCond_FirstUseEver);
@@ -3137,6 +3198,15 @@ void Ui::drawGenomeLab(AppState& app) {
         app.tool = Tool::Clone;
         app.notify("Click on the map to release your design");
     }
+    if (ImGui::Button(ICON_TROPHY " Enter tournament")) {
+        const Vec2 at = w.releaseDesign(lab_, 40);
+        app.cam->targetCenter = at;
+        app.follow = false;
+        app.notify("40 of your design released as " + w.species.all().back().name() + ". Ranking: Species > Lineages");
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+        ImGui::SetTooltip("Every entry starts equal: 40 creatures on a random fertile patch.\nEnter several designs (paste a friend's genome, enter it too) and see which lineage wins.");
+    ImGui::SameLine();
     if (ImGui::Button(ICON_COPY " Copy as text")) {
         std::string t = genomeToText(lab_);
         SDL_SetClipboardText(t.c_str());
@@ -3514,6 +3584,11 @@ void Ui::drawWelcome(AppState& app) {
         ImGui::SameLine();
         ImGui::TextUnformatted(sc.name);
         ImGui::PopFont();
+        if ((app.challengesDone >> i) & 1) {
+            ImGui::SameLine();
+            ImGui::TextColored(C_GREEN, ICON_CHECK);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("You have met this scenario's goal");
+        }
         ImGui::PushStyleColor(ImGuiCol_Text, C_ACCENT);
         ImGui::TextUnformatted(sc.tagline);
         ImGui::PopStyleColor();

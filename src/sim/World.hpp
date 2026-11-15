@@ -355,6 +355,7 @@ public:
     int spawnRandom(Vec2 at, int count, float radius, float dietMax = 0.3f);
     int spawnPredators(Vec2 at, int count, float radius);
     int spawnGenome(const Genome& g, uint32_t speciesHint, Vec2 at, int count, float radius);
+    Vec2 releaseDesign(const Genome& g, int count); // tournament entry: a new lineage on a random fertile patch; returns where
     int killRadius(Vec2 at, float radius, DeathCause cause);
     void meteor(Vec2 at, float radius);
     void feed(Vec2 at, float radius, float amount);

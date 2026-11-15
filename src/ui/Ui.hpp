@@ -42,6 +42,7 @@ struct AppState {
     bool follow = false;
     bool dynasty = true; // when the followed creature dies, follow its offspring
     bool pauseOnSpeciation = false, pauseOnExtinction = false, pauseOnAchievement = false;
+    int challengesDone = 0; // bit per scenario whose goal has been met (kept in settings.ini)
     uint32_t lastSelectedSpecies = 0;
 
     Genome clipboard;
@@ -140,6 +141,8 @@ private:
     void drawEncyclopedia(AppState& app);
     void drawWelcome(AppState& app);
     void drawGenomeLab(AppState& app);
+    void drawReport(AppState& app);
+    bool showReport_ = false;
     void drawPreferences(AppState& app);
     void drawTour(AppState& app);
     void drawLegend(AppState& app);

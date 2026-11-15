@@ -255,6 +255,7 @@ void App::loadSettings() {
         else if (k == "soundVolume") app_.soundVolume = std::clamp(v, 0.f, 1.f);
         else if (k == "pauseExtinction") app_.pauseOnExtinction = v != 0;
         else if (k == "pauseAchievement") app_.pauseOnAchievement = v != 0;
+        else if (k == "challengesDone") app_.challengesDone = int(v);
     }
     std::fclose(f);
 }
@@ -274,7 +275,7 @@ void App::saveSettings() {
                  app_.recordEvery);
     std::fprintf(f, "pauseSpeciation=%d\npauseExtinction=%d\npauseAchievement=%d\nthreads=%d\n", app_.pauseOnSpeciation,
                  app_.pauseOnExtinction, app_.pauseOnAchievement, app_.threadsSetting);
-    std::fprintf(f, "sound=%d\nsoundVolume=%g\n", app_.sound, app_.soundVolume);
+    std::fprintf(f, "sound=%d\nsoundVolume=%g\nchallengesDone=%d\n", app_.sound, app_.soundVolume, app_.challengesDone);
     std::fclose(f);
 }
 

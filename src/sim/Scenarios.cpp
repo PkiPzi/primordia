@@ -56,12 +56,16 @@ void makeMenagerie(World& w) {
         g.g[size_t(plan[k])] = 0.8f;
         if (plan[k] != G_SPIKES) g.g[G_SIZE] = std::min(g.g[G_SIZE], 0.3f); // small bodies fly and sunbathe best
     };
+    Rng rng(w.settings.seed + 77);
     for (Species& s : w.species.all())
         if (s.id >= 1 && s.id <= 4) edit(s.rep, int(s.id) - 1);
     for (Creature& c : w.creatures)
         if (c.speciesId >= 1 && c.speciesId <= 4) {
             edit(c.genome, int(c.speciesId) - 1);
             c.ph = Phenotype::from(c.genome, w.params.specialization);
+            // The finned lineage starts in the sea: founders are placed on land, where gills dry out.
+            for (int tries = 0; c.speciesId == 4 && tries < 400 && !w.terrain.water[size_t(w.terrain.index(c.pos.x, c.pos.y))]; ++tries)
+                c.pos = {rng.range(20.f, w.terrain.width - 20.f), rng.range(20.f, w.terrain.height - 20.f)};
         }
 }
 

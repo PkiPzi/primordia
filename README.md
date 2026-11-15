@@ -97,7 +97,7 @@ so a plant-herbivore arms race can unfold. Overlay and journal entries report it
 Events panel > **Discoveries** is a journal of behaviours the simulation produced on its own. A detector watches each
 species and writes an entry when something clearly stands out: a call that is used in one context far more than
 elsewhere ("Call A when hurt"), listeners that bolt or freeze when they hear it, farming and poaching, species that
-learn, a lineage that changes fast, population crashes, cannibalism. An ongoing behaviour has to hold for 2000 ticks
+learn, a lineage that changes fast, population crashes. An ongoing behaviour has to hold for 2000 ticks
 before it is written down, close relatives doing the same thing are reported once, and only the first three
 lineages to show a behaviour make the journal. Click an entry to fly there and highlight the
 species. **Export journal** writes it as Markdown to `~/Documents/Primordia/`. `--headless` prints the journal at the end.
@@ -116,10 +116,15 @@ species. **Export journal** writes it as Markdown to `~/Documents/Primordia/`. `
 - The sea is a habitat, not just an obstacle. Algae grows in water, thickest on the shallow coastal shelf. An
   Aquatic gene trades legs for fins: sea bodies swim fast and cheaply, graze algae and never thirst in water, but are
   slow, costly and quick to dry out on land. Founders are land animals, so amphibians and true sea animals have to evolve.
-- Three more body plans start near zero and have to evolve. Wings make a body faster and cheaper to move, carry it
-  over water and dodge bites from worse fliers, but cost upkeep and give heavy bodies little lift. Quills hurt
-  whoever bites. Photosynthetic skin earns energy from daylight while the creature is still and uncrowded, at the
-  cost of speed and plant digestion (and all meat digestion).
+- Three more body plans start near zero and have to evolve. Wings make a body faster, carry it
+  over water and dodge bites from worse fliers, but flapping is hard work, fliers graze clumsily, wings cost upkeep and heavy bodies get
+  little lift. Quills hurt whoever bites. Photosynthetic skin earns a living wage from daylight for a body standing
+  still in the open (moving and neighbours' shade cut it), at the cost of speed, some plant digestion and all meat
+  digestion.
+- Flesh costs energy to grow and a carcass returns what was paid, so nothing lives on free meat.
+- Hunters: committed meat eaters (diet above about 0.8) run faster, idle cheaply, survive long fasts and take a
+  share of each kill on the spot. The same or a sister species is never prey, and a full hunter bites
+  half-heartedly, which keeps hunters from eating their own young or stripping the land of prey.
 - Bodies are drawn from their genes: legs on land animals, fins and a tail fluke on swimmers, wings, quills and
   leaf lobes. Calls ripple outward (one colour per call) and teleports flash.
 - Evolution pace (Simulation > Evolution pace, or Settings > Evolution) sets ageing and mutation together: 2x to
@@ -133,7 +138,7 @@ species. **Export journal** writes it as Markdown to `~/Documents/Primordia/`. `
 - Camouflage: a colour matching the ground (green grass, tan earth) is spotted from closer, especially when still.
 - Close sister species occasionally hybridize when they meet.
 - Mate choice: creatures prefer partners of a particular colour, which can drive runaway sexual selection.
-- If hunters die out, a new hunting lineage immigrates half a year later (can be switched off).
+- If hunters die out, a new hunting lineage immigrates a quarter of a year later (can be switched off).
 
 ## Scenarios
 
@@ -141,6 +146,10 @@ Primordial Soup, Natural Selection 101, Predator & Prey, Warning Colours, Epidem
 Kin & Altruism, Cambrian Explosion, Single Origin, Desert Pangaea, Water World, and Menagerie (founders that already fly, bristle, sunbathe and swim). Pick one on the welcome screen or under World > Scenarios.
 Each scenario has a goal with a progress bar in its notes box (for example "Have 6 species alive at once" or "Keep
 hunters and grazers together until year 8"). Some goals can fail; rewind a year and try something different.
+Goals you have met are ticked on the welcome screen and counted under World > Scenarios. View > World report is a
+short results card you can copy and share; it opens by itself when a goal is met. In the Genome Lab, "Enter
+tournament" releases 40 of your design on a random fertile patch; enter several designs and the lineage
+leaderboard ranks them.
 
 ## Getting around
 

@@ -171,7 +171,8 @@ struct Phenotype {
     float detox;        // resistance to plant defences
     float aquatic;      // 0 = built for land, 1 = built for the sea
     float wings, lift;  // wing size, and the flight it actually buys this body (heavy bodies get less)
-    float spikes;       // quills that hurt attackers
+    float spikes;
+    float carn; // 0..1: how far the body is a specialist hunter's       // quills that hurt attackers
     float photo;        // photosynthetic skin
     int connections;
 

@@ -449,8 +449,9 @@ Phenotype Phenotype::from(const Genome& gn, float specialization) {
     p.spikes = g[G_SPIKES];
     p.photo = g[G_PHOTO];
     // Costs grow with the square of the gene, so a first step toward a new body is cheap and the last is dear.
-    p.accel *= (1.f + 0.4f * p.lift) * (1.f - 0.1f * p.spikes) * (1.f - 0.4f * p.photo * p.photo);
-    p.plantEff *= 1.f - 0.5f * p.photo * p.photo;
+    p.carn = smoothstep(0.7f, 0.9f, p.diet); // only committed meat eaters get the hunter's body, not grazers that dabble
+    p.accel *= (1.f + 0.25f * p.carn) * (1.f + 0.25f * p.lift) * (1.f - 0.1f * p.spikes) * (1.f - 0.4f * p.photo * p.photo);
+    p.plantEff *= 1.f - 0.3f * p.photo * p.photo;
     p.meatEff *= 1.f - p.photo;
     p.learnRate = 0.05f * g[G_PLASTICITY] * g[G_PLASTICITY] * 4.f; // quadratic: low plasticity is nearly free
     return p;
